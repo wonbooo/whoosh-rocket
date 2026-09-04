@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-license"
+description = "Read machine id and import or issue licenses"
+commands.allow = [
+  "get_machine_id",
+  "get_license_status",
+  "import_license",
+  "issue_license"
+]
