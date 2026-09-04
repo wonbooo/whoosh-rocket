@@ -154,13 +154,22 @@ async function proxyKingdee(req: IncomingMessage, res: ServerResponse) {
   }
 }
 
-export default defineConfig(() => {
+export default defineConfig(({ command }) => {
   const host = process.env.TAURI_DEV_HOST;
+  const productionBuild = command === 'build';
 
   return {
     plugins: [react(), kingdeeDevProxy()],
     clearScreen: false,
     envPrefix: ['VITE_', 'TAURI_ENV_'],
+    esbuild: productionBuild
+      ? { drop: ['debugger'], legalComments: 'none' }
+      : undefined,
+    build: {
+      sourcemap: false,
+      minify: true,
+      cssMinify: true,
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, './src'),
