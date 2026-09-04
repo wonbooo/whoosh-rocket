@@ -1,9 +1,22 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
+import { vi } from 'vitest';
 import { Header } from '@/components/shared/Header';
 import Home from '@/pages/Home';
 import { useKingdeeStore } from '@/store/useKingdeeStore';
+
+vi.mock('@/features/license/api', () => ({
+  isLicenseEnforced: () => false,
+  fetchMachineId: vi.fn(async () => 'MACHINE-001'),
+  fetchLicenseStatus: vi.fn(async () => ({
+    valid: true,
+    machineId: 'MACHINE-001',
+    expiresAt: '2026-12-05',
+    reason: '',
+  })),
+  importLicense: vi.fn(),
+}));
 
 afterEach(() => {
   useKingdeeStore.setState({
@@ -129,5 +142,30 @@ describe('Home page', () => {
     expect(
       screen.getByRole('button', { name: '上传 Excel' }),
     ).toBeInTheDocument();
+  });
+
+  it('opens the license import page from 变更授权', async () => {
+    const user = userEvent.setup();
+    renderHome();
+    expect(
+      screen.getByRole('button', { name: '变更授权' }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '变更授权' }));
+
+    expect(
+      await screen.findByRole('heading', { name: '变更授权' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('本机机器码')).toBeInTheDocument();
+    expect(await screen.findByText('MACHINE-001')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/粘贴授权文本/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '导入' })).toBeInTheDocument();
+    expect(screen.queryByText('委外下单')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '返回' }));
+    expect(screen.getByText('委外下单')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { name: '变更授权' }),
+    ).not.toBeInTheDocument();
   });
 });
