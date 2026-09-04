@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# Use local lint-staged (Husky prepends node_modules/.bin).
+# Do not call global bunx: the npm bunx shim points to a missing bunx.exe.
+lint-staged

@@ -1,0 +1,26 @@
+import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
+import type { UserInfo } from '@/types/user';
+
+interface AuthState {
+  token: string | null;
+  userInfo: UserInfo | null;
+  setToken: (token: string) => void;
+  setUserInfo: (userInfo: UserInfo | null) => void;
+  logout: () => void;
+}
+
+export const useAuthStore = create<AuthState>()(
+  persist(
+    (set) => ({
+      token: null,
+      userInfo: null,
+      setToken: (token) => set({ token }),
+      setUserInfo: (userInfo) => set({ userInfo }),
+      logout: () => set({ token: null, userInfo: null }),
+    }),
+    {
+      name: 'auth-storage',
+    },
+  ),
+);

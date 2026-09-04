@@ -1,0 +1,7 @@
+dist
+coverage
+node_modules
+bun.lock
+*.min.js
+src-tauri/target
+src-tauri/gen
