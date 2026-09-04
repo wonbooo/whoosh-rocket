@@ -8,6 +8,7 @@ import {
 } from '@/apis/kingdee/client';
 import { SettingsDialog } from '@/components/shared/SettingsDialog';
 import { Button } from '@/components/ui/button';
+import { useLicense } from '@/features/license/LicenseContext';
 import { useToast } from '@/hooks/use-toast';
 import { useKingdeeStore } from '@/store/useKingdeeStore';
 
@@ -16,6 +17,7 @@ export function Header() {
   const [connecting, setConnecting] = useState(false);
   const sessionId = useKingdeeStore((state) => state.sessionId);
   const clearSession = useKingdeeStore((state) => state.clearSession);
+  const license = useLicense();
   const canConnect = useKingdeeStore((state) =>
     Boolean(
       state.serverUrl && state.acctName && state.username && state.password,
@@ -68,6 +70,11 @@ export function Header() {
           咻咻小火箭
         </Link>
         <div className="flex items-center gap-3">
+          {license?.status.expiresAt ? (
+            <span className="text-sm text-zinc-500">
+              授权至 {license.status.expiresAt}
+            </span>
+          ) : null}
           <span
             className={
               connected ? 'text-sm text-emerald-600' : 'text-sm text-red-500'
