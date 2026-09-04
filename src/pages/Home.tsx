@@ -56,9 +56,7 @@ export default function Home() {
     }
     if (item.id === 'packaging') {
       setPackagingOpen(true);
-      return;
     }
-    toast({ title: item.title, description: '下单流程即将接入' });
   };
 
   return (
