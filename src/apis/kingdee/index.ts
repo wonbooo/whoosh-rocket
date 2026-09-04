@@ -3,11 +3,14 @@ export {
   execute,
   executeData,
   executeForm,
+  formatKingdeeError,
+  formatLoginSuccessToast,
   getDataCenters,
   getKingdeeConfig,
   KingdeeAuthError,
   KingdeeError,
   loginByAppSecret,
+  loginByPassword,
 } from '@/apis/kingdee/client';
 export {
   AUTH_ERROR_HINT,
@@ -18,5 +21,6 @@ export {
   wrapAuthError,
   wrapModelData,
   wrapQueryResult,
+  buildWorkflowAuditPayload,
 } from '@/apis/kingdee/utils';
 export { KINGDEE_FORM_IDS } from '@/types/kingdee';

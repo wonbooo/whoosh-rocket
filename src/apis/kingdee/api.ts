@@ -10,6 +10,7 @@ import {
   iterDateChunks,
   wrapModelData,
   wrapQueryResult,
+  buildWorkflowAuditPayload,
 } from '@/apis/kingdee/utils';
 import type {
   BillCountResult,
@@ -225,6 +226,25 @@ export const kingdeeApi = {
       'Audit',
       params.formId,
       buildIdsPayload(params.numbers, params.ids),
+    );
+  },
+
+  workflowAudit(
+    params: OperateBillParams & { userName?: string; opinion?: string },
+  ) {
+    return execute(
+      'Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.WorkflowAudit',
+      [
+        JSON.stringify(
+          buildWorkflowAuditPayload({
+            formId: params.formId,
+            numbers: params.numbers,
+            ids: params.ids,
+            userName: params.userName,
+            opinion: params.opinion,
+          }),
+        ),
+      ],
     );
   },
 

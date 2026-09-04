@@ -4,6 +4,9 @@ export const KINGDEE_FORM_IDS = {
   SUPPLIER: 'BD_Supplier',
   SALE_ORDER: 'SAL_SaleOrder',
   PURCHASE_ORDER: 'PUR_PurchaseOrder',
+  PUR_REQUISITION: 'PUR_Requisition',
+  SUB_SUBREQORDER: 'SUB_SUBREQORDER',
+  IN_STOCK_APPLY: 'PRZG_RKSQD',
   IN_STOCK: 'STK_InStock',
   OUT_STOCK: 'STK_OutStock',
   VOUCHER: 'GL_VOUCHER',
@@ -16,6 +19,7 @@ export interface KingdeeConfig {
   serverUrl: string;
   acctId: string;
   username: string;
+  password: string;
   appId: string;
   appSecret: string;
   lcid: number;
@@ -27,6 +31,12 @@ export interface KingdeeLoginContext {
   UserToken?: string;
   UserName?: string;
   DBid?: string;
+  CustomName?: string;
+  DataCenterName?: string;
+  CurrentOrganizationInfo?: {
+    ID?: number;
+    Name?: string;
+  };
 }
 
 export interface KingdeeLoginResult {
@@ -108,7 +118,7 @@ export interface BillRangeQueryParams {
 export interface IdsPayload {
   CreateOrgId: number;
   Numbers: string[];
-  Ids: string[];
+  Ids: string;
 }
 
 export interface ViewBillParams {
