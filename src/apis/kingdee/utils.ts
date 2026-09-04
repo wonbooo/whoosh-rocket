@@ -18,7 +18,24 @@ export function buildIdsPayload(numbers = '', ids = ''): IdsPayload {
   return {
     CreateOrgId: 0,
     Numbers: splitCsv(numbers),
-    Ids: splitCsv(ids),
+    Ids: splitCsv(ids).join(','),
+  };
+}
+
+export function buildWorkflowAuditPayload(params: {
+  formId: string;
+  numbers?: string;
+  ids?: string;
+  userName?: string;
+  opinion?: string;
+}): Record<string, unknown> {
+  return {
+    FormId: params.formId,
+    Ids: splitCsv(params.ids).join(','),
+    Numbers: splitCsv(params.numbers),
+    UserName: params.userName ?? '',
+    ApprovalType: '1',
+    ApprovalOpinion: params.opinion ?? '同意',
   };
 }
 
