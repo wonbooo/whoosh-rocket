@@ -64,9 +64,7 @@ export function AftersaleOrderDialog({
   const [selectedBillKeys, setSelectedBillKeys] = useState<Set<string>>(
     new Set(),
   );
-  const [operating, setOperating] = useState<
-    'submit' | 'audit' | 'push' | null
-  >(null);
+  const [operating, setOperating] = useState<'submit' | 'audit' | null>(null);
 
   const groups = groupAftersaleBySupplier(rows);
   const selectedRows = rows.filter((row) => selectedIds.has(row.id));
@@ -198,12 +196,12 @@ export function AftersaleOrderDialog({
     );
   };
 
-  const handleBillAction = async (action: 'submit' | 'audit' | 'push') => {
+  const handleBillAction = async (action: 'submit' | 'audit') => {
     if (selectedBills.length === 0) {
       toast({ title: '请先勾选订单号' });
       return;
     }
-    const labels = { submit: '提交', audit: '审核', push: '下推' };
+    const labels = { submit: '提交', audit: '审核' };
     setOperating(action);
     try {
       const outcome = await operateAftersaleBills(action, selectedBills);
@@ -419,16 +417,6 @@ export function AftersaleOrderDialog({
                 }}
               >
                 {operating === 'audit' ? '审核中...' : '审核'}
-              </Button>
-              <Button
-                type="button"
-                className="rounded-lg bg-zinc-900 text-white hover:bg-zinc-800"
-                disabled={selectedBills.length === 0 || operating !== null}
-                onClick={() => {
-                  void handleBillAction('push');
-                }}
-              >
-                {operating === 'push' ? '下推中...' : '下推'}
               </Button>
             </DialogFooter>
           </div>

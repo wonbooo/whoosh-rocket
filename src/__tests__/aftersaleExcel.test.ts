@@ -6,10 +6,12 @@ import {
   parseAftersaleWorkbook,
 } from '@/features/aftersale/parseExcel';
 import {
+  AFTERSALE_DEFAULT_PRICE,
   buildPurchaseRequisitionModel,
   flattenCreatedBills,
   operateAftersaleBills,
   placeAftersaleOrders,
+  pushAftersaleRequisitions,
   readSaveOutcome,
   toKingdeeDate,
 } from '@/features/aftersale/requisition';
@@ -78,6 +80,8 @@ describe('aftersale excel', () => {
         FSuggestSupplierId: { FNumber: 'CP00220' },
         FStockId: { FNumber: 'CK338' },
         FPurchaserId: { FNumber: '23050514' },
+        FEvaluatePrice: AFTERSALE_DEFAULT_PRICE,
+        FTAXPRICE: AFTERSALE_DEFAULT_PRICE,
       }),
     ]);
     expect(toKingdeeDate('2026/08/26')).toBe('2026-08-26');
@@ -154,5 +158,74 @@ describe('aftersale excel', () => {
     expect(calls).toEqual([
       { action: 'submit', numbers: 'REQ-1,REQ-2', ids: '11,22' },
     ]);
+  });
+
+  it('fills purchase-order prices when push fails on zero unit price', async () => {
+    const pushResult = {
+      Result: {
+        ResponseStatus: {
+          ErrorCode: 500,
+          IsSuccess: false,
+          Errors: [{ FieldName: '', Message: '第1行分录，非赠品单价不能为0' }],
+          SuccessEntitys: [],
+          MsgCode: 11,
+        },
+        ConvertResponseStatus: {
+          IsSuccess: true,
+          Errors: [],
+          SuccessEntitys: [{ Id: '115404', Number: null, DIndex: 0 }],
+          MsgCode: 0,
+        },
+      },
+    };
+    const pushBill = vi.fn(async () => pushResult);
+    const viewBill = vi.fn(async () => ({
+      Result: {
+        ResponseStatus: { IsSuccess: true },
+        Result: {
+          Id: 115404,
+          FPOOrderEntry: [{ Id: 9001, FPrice: 0, FTaxPrice: 0 }],
+        },
+      },
+    }));
+    const saveBill = vi.fn(async () => ({
+      Result: { ResponseStatus: { IsSuccess: true } },
+    }));
+
+    const data = await pushAftersaleRequisitions('REQ-1', '11', {
+      pushBill,
+      viewBill,
+      saveBill,
+    });
+
+    expect(pushBill).toHaveBeenCalledWith(
+      expect.objectContaining({
+        formId: 'PUR_Requisition',
+        targetFormId: 'PUR_PurchaseOrder',
+        isEnableDefaultRule: true,
+        isDraftWhenSaveFail: true,
+      }),
+    );
+    expect(viewBill).toHaveBeenCalledWith({
+      formId: 'PUR_PurchaseOrder',
+      billId: '115404',
+    });
+    expect(saveBill).toHaveBeenCalledWith({
+      formId: 'PUR_PurchaseOrder',
+      model: {
+        IsDeleteEntry: 'false',
+        Model: {
+          FID: '115404',
+          FPOOrderEntry: [
+            {
+              FENTRYID: 9001,
+              FPrice: AFTERSALE_DEFAULT_PRICE,
+              FTaxPrice: AFTERSALE_DEFAULT_PRICE,
+            },
+          ],
+        },
+      },
+    });
+    expect(readSaveOutcome(data).success).toBe(true);
   });
 });

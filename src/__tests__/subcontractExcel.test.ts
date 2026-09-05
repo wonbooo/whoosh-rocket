@@ -1,7 +1,10 @@
+import { describe, expect, it, vi } from 'vitest';
 import * as XLSX from 'xlsx';
+import { kingdeeApi } from '@/apis/kingdee/api';
 import { toNextWeekdayDate } from '@/features/aftersale/requisition';
 import {
   buildSubcontractOrderModel,
+  operateSubcontractBills,
   placeSubcontractOrders,
 } from '@/features/subcontract/order';
 import {
@@ -9,6 +12,20 @@ import {
   parseSubcontractWorkbook,
 } from '@/features/subcontract/parseExcel';
 import type { SubcontractRow } from '@/features/subcontract/types';
+import { KINGDEE_FORM_IDS } from '@/types/kingdee';
+
+vi.mock('@/apis/kingdee/api', () => ({
+  kingdeeApi: {
+    saveBill: vi.fn(),
+    submitBill: vi.fn(),
+    workflowAudit: vi.fn(),
+    pushBill: vi.fn(),
+  },
+}));
+
+vi.mock('@/apis/kingdee/client', () => ({
+  getKingdeeConfig: () => ({ username: 'tester' }),
+}));
 
 const sampleRows: SubcontractRow[] = [
   {
@@ -110,5 +127,21 @@ describe('subcontract excel', () => {
       'WW-CP00219',
       'WW-CP00123',
     ]);
+  });
+
+  it('pushes subcontract orders to purchase orders', async () => {
+    vi.mocked(kingdeeApi.pushBill).mockResolvedValue({
+      Result: { ResponseStatus: { IsSuccess: true } },
+    });
+    await operateSubcontractBills('push', [
+      { key: '1', billNo: 'WW001', billId: '9001', supplier: 'CP00219' },
+    ]);
+    expect(kingdeeApi.pushBill).toHaveBeenCalledWith({
+      formId: KINGDEE_FORM_IDS.SUB_SUBREQORDER,
+      numbers: 'WW001',
+      ids: '9001',
+      targetFormId: KINGDEE_FORM_IDS.PURCHASE_ORDER,
+      isEnableDefaultRule: true,
+    });
   });
 });

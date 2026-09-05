@@ -293,6 +293,7 @@ export const kingdeeApi = {
       TargetBillTypeId: params.targetBillTypeId ?? '',
       IsEnableDefaultRule:
         params.isEnableDefaultRule === false ? 'false' : 'true',
+      IsDraftWhenSaveFail: params.isDraftWhenSaveFail ? 'true' : 'false',
     };
     if (params.customParams) {
       data.CustomParams = params.customParams;
