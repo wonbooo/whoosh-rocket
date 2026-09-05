@@ -8,12 +8,14 @@ import {
 } from '@/apis/kingdee/client';
 import { SettingsDialog } from '@/components/shared/SettingsDialog';
 import { Button } from '@/components/ui/button';
+import { LicenseImportPage } from '@/features/license/LicenseImportPage';
 import { useLicense } from '@/features/license/LicenseContext';
 import { useToast } from '@/hooks/use-toast';
 import { useKingdeeStore } from '@/store/useKingdeeStore';
 
 export function Header() {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [changeLicenseOpen, setChangeLicenseOpen] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const sessionId = useKingdeeStore((state) => state.sessionId);
   const clearSession = useKingdeeStore((state) => state.clearSession);
@@ -70,11 +72,21 @@ export function Header() {
           咻咻小火箭
         </Link>
         <div className="flex items-center gap-3">
-          {license?.status.expiresAt ? (
-            <span className="text-sm text-zinc-500">
-              授权至 {license.status.expiresAt}
-            </span>
-          ) : null}
+          <div className="flex items-center gap-1">
+            {license?.status.expiresAt ? (
+              <span className="text-sm text-zinc-500">
+                授权至 {license.status.expiresAt}
+              </span>
+            ) : null}
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-8 rounded-lg px-2.5 font-normal text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
+              onClick={() => setChangeLicenseOpen(true)}
+            >
+              变更授权
+            </Button>
+          </div>
           <span
             className={
               connected ? 'text-sm text-emerald-600' : 'text-sm text-red-500'
@@ -118,6 +130,21 @@ export function Header() {
         </div>
       </div>
       <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+      {changeLicenseOpen ? (
+        <div className="fixed inset-0 z-50">
+          <LicenseImportPage
+            title="变更授权"
+            description="导入新的 license 后立即生效"
+            onClose={() => setChangeLicenseOpen(false)}
+            onImported={async (status) => {
+              if (status.valid) {
+                await license?.refresh();
+                setChangeLicenseOpen(false);
+              }
+            }}
+          />
+        </div>
+      ) : null}
     </header>
   );
 }
