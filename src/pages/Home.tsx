@@ -1,8 +1,6 @@
 import { useState } from 'react';
 import { Briefcase, FileText, Plus } from 'lucide-react';
 import { AftersaleOrderDialog } from '@/features/aftersale/AftersaleOrderDialog';
-import { LicenseImportPage } from '@/features/license/LicenseImportPage';
-import { useLicense } from '@/features/license/LicenseContext';
 import { PackagingOrderDialog } from '@/features/packaging/PackagingOrderDialog';
 import { SubcontractOrderDialog } from '@/features/subcontract/SubcontractOrderDialog';
 import { useToast } from '@/hooks/use-toast';
@@ -35,12 +33,10 @@ const orderTypes = [
 
 export default function Home() {
   const sessionId = useKingdeeStore((state) => state.sessionId);
-  const license = useLicense();
   const { toast } = useToast();
   const [aftersaleOpen, setAftersaleOpen] = useState(false);
   const [packagingOpen, setPackagingOpen] = useState(false);
   const [subcontractOpen, setSubcontractOpen] = useState(false);
-  const [changeLicenseOpen, setChangeLicenseOpen] = useState(false);
 
   const handleSelect = (item: (typeof orderTypes)[number]) => {
     if (!sessionId) {
@@ -62,22 +58,6 @@ export default function Home() {
       setPackagingOpen(true);
     }
   };
-
-  if (changeLicenseOpen) {
-    return (
-      <LicenseImportPage
-        title="变更授权"
-        description="导入新的 license 后立即生效"
-        onClose={() => setChangeLicenseOpen(false)}
-        onImported={async (status) => {
-          if (status.valid) {
-            await license?.refresh();
-            setChangeLicenseOpen(false);
-          }
-        }}
-      />
-    );
-  }
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-10">
@@ -115,15 +95,6 @@ export default function Home() {
             </button>
           );
         })}
-      </div>
-      <div className="mt-8">
-        <button
-          type="button"
-          className="text-sm text-zinc-500 underline-offset-4 hover:text-zinc-800 hover:underline"
-          onClick={() => setChangeLicenseOpen(true)}
-        >
-          变更授权
-        </button>
       </div>
       <AftersaleOrderDialog
         open={aftersaleOpen}

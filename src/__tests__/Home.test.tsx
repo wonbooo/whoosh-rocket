@@ -1,8 +1,9 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
 import { Header } from '@/components/shared/Header';
+import { LicenseProvider } from '@/features/license/LicenseContext';
 import Home from '@/pages/Home';
 import { useKingdeeStore } from '@/store/useKingdeeStore';
 
@@ -33,10 +34,22 @@ afterEach(() => {
 
 function renderHome() {
   return render(
-    <MemoryRouter>
-      <Header />
-      <Home />
-    </MemoryRouter>,
+    <LicenseProvider
+      value={{
+        status: {
+          valid: true,
+          machineId: 'MACHINE-001',
+          expiresAt: '2026-12-05',
+          reason: '',
+        },
+        refresh: vi.fn(async () => {}),
+      }}
+    >
+      <MemoryRouter>
+        <Header />
+        <Home />
+      </MemoryRouter>
+    </LicenseProvider>,
   );
 }
 
@@ -44,6 +57,12 @@ describe('Home page', () => {
   it('renders order types and connect action', () => {
     renderHome();
     expect(screen.getByText('咻咻小火箭')).toBeInTheDocument();
+    expect(screen.getByText('授权至 2026-12-05')).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('banner')).getByRole('button', {
+        name: '变更授权',
+      }),
+    ).toBeInTheDocument();
     expect(screen.getByText('未连接金蝶')).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: '连接金蝶' }),
@@ -144,14 +163,12 @@ describe('Home page', () => {
     ).toBeInTheDocument();
   });
 
-  it('opens the license import page from 变更授权', async () => {
+  it('opens the license import page from header 变更授权', async () => {
     const user = userEvent.setup();
     renderHome();
-    expect(
-      screen.getByRole('button', { name: '变更授权' }),
-    ).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: '变更授权' }));
+    const header = screen.getByRole('banner');
+    expect(within(header).getByText('授权至 2026-12-05')).toBeInTheDocument();
+    await user.click(within(header).getByRole('button', { name: '变更授权' }));
 
     expect(
       await screen.findByRole('heading', { name: '变更授权' }),
@@ -160,7 +177,6 @@ describe('Home page', () => {
     expect(await screen.findByText('MACHINE-001')).toBeInTheDocument();
     expect(screen.getByPlaceholderText(/粘贴授权文本/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '导入' })).toBeInTheDocument();
-    expect(screen.queryByText('委外下单')).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: '返回' }));
     expect(screen.getByText('委外下单')).toBeInTheDocument();
