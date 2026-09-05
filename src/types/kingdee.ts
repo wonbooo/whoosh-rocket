@@ -148,6 +148,7 @@ export interface PushBillParams extends OperateBillParams {
   targetOrgId?: string;
   targetBillTypeId?: string;
   isEnableDefaultRule?: boolean;
+  isDraftWhenSaveFail?: boolean;
   customParams?: Record<string, unknown>;
 }
 

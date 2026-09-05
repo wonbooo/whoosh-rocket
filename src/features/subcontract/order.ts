@@ -116,6 +116,7 @@ const defaultOperators: BillOperators = {
       formId: KINGDEE_FORM_IDS.SUB_SUBREQORDER,
       numbers,
       ids,
+      targetFormId: KINGDEE_FORM_IDS.PURCHASE_ORDER,
       isEnableDefaultRule: true,
     }),
 };

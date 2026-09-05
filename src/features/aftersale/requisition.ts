@@ -5,6 +5,9 @@ import { groupAftersaleBySupplier } from '@/features/aftersale/parseExcel';
 import type { AftersaleRow, CreatedBill } from '@/features/aftersale/types';
 import { KINGDEE_FORM_IDS } from '@/types/kingdee';
 
+/** 售后 Excel 无单价，下推采购订单时用最小非零含税单价，避免「非赠品单价不能为 0」。 */
+export const AFTERSALE_DEFAULT_PRICE = 0.01;
+
 export function toKingdeeDate(ymd: string): string {
   return ymd.replaceAll('/', '-');
 }
@@ -54,6 +57,8 @@ export function buildPurchaseRequisitionModel(
         entry.FRequireOrgId = org;
         entry.FReceiveOrgId = org;
       }
+      entry.FEvaluatePrice = AFTERSALE_DEFAULT_PRICE;
+      entry.FTAXPRICE = AFTERSALE_DEFAULT_PRICE;
       return entry;
     }),
   };
@@ -172,6 +177,141 @@ export function flattenCreatedBills(
   return bills;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function kingdeeResultModel(data: unknown): Record<string, unknown> | null {
+  const root = asRecord(data);
+  const result = asRecord(root?.Result) ?? root;
+  return asRecord(result?.Result) ?? result;
+}
+
+export function readConvertSuccessIds(data: unknown): string[] {
+  const ids: string[] = [];
+  const visit = (value: unknown) => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    const record = asRecord(value);
+    if (!record) {
+      return;
+    }
+    const convert = asRecord(record.ConvertResponseStatus);
+    const entities = convert?.SuccessEntitys;
+    if (Array.isArray(entities)) {
+      for (const item of entities) {
+        const entity = asRecord(item);
+        const id = String(entity?.Id ?? '').trim();
+        if (id) {
+          ids.push(id);
+        }
+      }
+    }
+    visit(record.Result);
+  };
+  visit(data);
+  return ids;
+}
+
+export function isNonGiftZeroPriceError(data: unknown): boolean {
+  for (const status of responseStatuses(data)) {
+    for (const error of status.Errors ?? []) {
+      if ((error.Message ?? '').includes('非赠品单价不能为0')) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function purchaseOrderEntryId(
+  entry: Record<string, unknown>,
+): string | number | undefined {
+  const value = entry.Id ?? entry.FENTRYID ?? entry.FEntryID;
+  if (typeof value === 'string' || typeof value === 'number') {
+    return value;
+  }
+  return undefined;
+}
+
+export interface AftersalePushApi {
+  pushBill: (params: {
+    formId: string;
+    numbers?: string;
+    ids?: string;
+    targetFormId?: string;
+    isEnableDefaultRule?: boolean;
+    isDraftWhenSaveFail?: boolean;
+  }) => Promise<unknown>;
+  viewBill: (params: {
+    formId: string;
+    number?: string;
+    billId?: string;
+  }) => Promise<unknown>;
+  saveBill: (params: {
+    formId: string;
+    model: Record<string, unknown> | { Model: Record<string, unknown> };
+  }) => Promise<unknown>;
+}
+
+export async function pushAftersaleRequisitions(
+  numbers: string,
+  ids: string,
+  api: AftersalePushApi = kingdeeApi,
+): Promise<unknown> {
+  const pushed = await api.pushBill({
+    formId: KINGDEE_FORM_IDS.PUR_REQUISITION,
+    numbers,
+    ids,
+    targetFormId: KINGDEE_FORM_IDS.PURCHASE_ORDER,
+    isEnableDefaultRule: true,
+    isDraftWhenSaveFail: true,
+  });
+  if (readSaveOutcome(pushed).success || !isNonGiftZeroPriceError(pushed)) {
+    return pushed;
+  }
+  const poIds = readConvertSuccessIds(pushed);
+  if (poIds.length === 0) {
+    return pushed;
+  }
+
+  let last: unknown = pushed;
+  for (const poId of poIds) {
+    const viewed = await api.viewBill({
+      formId: KINGDEE_FORM_IDS.PURCHASE_ORDER,
+      billId: poId,
+    });
+    const model = kingdeeResultModel(viewed);
+    const entries = Array.isArray(model?.FPOOrderEntry)
+      ? (model.FPOOrderEntry as Record<string, unknown>[])
+      : [];
+    last = await api.saveBill({
+      formId: KINGDEE_FORM_IDS.PURCHASE_ORDER,
+      model: {
+        IsDeleteEntry: 'false',
+        Model: {
+          FID: poId,
+          FPOOrderEntry: entries.map((entry) => ({
+            FENTRYID: purchaseOrderEntryId(entry),
+            FPrice: AFTERSALE_DEFAULT_PRICE,
+            FTaxPrice: AFTERSALE_DEFAULT_PRICE,
+          })),
+        },
+      },
+    });
+    const saved = readSaveOutcome(last);
+    if (!saved.success) {
+      return last;
+    }
+  }
+  return last;
+}
+
 export type AftersaleBillAction = 'submit' | 'audit' | 'push';
 
 export interface BillOperators {
@@ -194,14 +334,7 @@ const defaultOperators: BillOperators = {
       ids,
       userName: getKingdeeConfig().username,
     }),
-  push: (numbers, ids) =>
-    kingdeeApi.pushBill({
-      formId: KINGDEE_FORM_IDS.PUR_REQUISITION,
-      numbers,
-      ids,
-      targetFormId: KINGDEE_FORM_IDS.PURCHASE_ORDER,
-      isEnableDefaultRule: true,
-    }),
+  push: (numbers, ids) => pushAftersaleRequisitions(numbers, ids),
 };
 
 export async function operateAftersaleBills(
