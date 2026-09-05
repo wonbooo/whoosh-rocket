@@ -41,7 +41,9 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-        "displayLanguageSelector": false
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/installer.ico",
+        "uninstallerIcon": "icons/installer.ico"
       }
     }
   }
