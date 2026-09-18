@@ -154,6 +154,9 @@ describe('PackagingOrderDialog', () => {
     await user.click(screen.getByRole('button', { name: '下单' }));
 
     expect(await screen.findByText('RK001')).toBeInTheDocument();
+    const billScroller = screen.getByText('RK001').closest('div');
+    expect(billScroller?.className).toContain('max-h-[240px]');
+    expect(billScroller?.className).toContain('overflow-y-auto');
     expect(screen.getByRole('button', { name: '提交' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '审核' })).toBeInTheDocument();
     expect(

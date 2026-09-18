@@ -1,6 +1,6 @@
 [package]
 name = "whoosh-rocket"
-version = "0.0.0"
+version = "0.0.1"
 description = "咻咻小火箭"
 authors = ["you"]
 edition = "2021"

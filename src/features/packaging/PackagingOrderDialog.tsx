@@ -278,7 +278,7 @@ export function PackagingOrderDialog({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         className={cn(
-          'gap-5 p-6',
+          'flex max-h-[90vh] flex-col gap-5 overflow-hidden p-6',
           groups.length > 0 || createdBills.length > 0
             ? 'max-w-5xl'
             : 'max-w-[520px]',
@@ -287,7 +287,7 @@ export function PackagingOrderDialog({
         onInteractOutside={(event) => event.preventDefault()}
         onFocusOutside={(event) => event.preventDefault()}
       >
-        <DialogHeader>
+        <DialogHeader className="shrink-0">
           <DialogTitle className="text-[22px]">包材下单</DialogTitle>
           <DialogDescription>在系统中新增入库申请单</DialogDescription>
         </DialogHeader>
@@ -306,7 +306,7 @@ export function PackagingOrderDialog({
 
         <Button
           type="button"
-          className="h-10 rounded-lg bg-zinc-900 text-white hover:bg-zinc-800"
+          className="h-10 shrink-0 rounded-lg bg-zinc-900 text-white hover:bg-zinc-800"
           onClick={() => fileInputRef.current?.click()}
         >
           <Upload className="h-4 w-4" />
@@ -314,7 +314,7 @@ export function PackagingOrderDialog({
         </Button>
 
         {groups.length > 0 ? (
-          <div className="max-h-[420px] overflow-y-auto pr-1">
+          <div className="min-h-0 max-h-[420px] overflow-y-auto pr-1">
             <div className="rounded-lg border">
               <table className="w-full text-sm">
                 <thead>
@@ -358,7 +358,7 @@ export function PackagingOrderDialog({
         ) : null}
 
         {groups.length > 0 ? (
-          <DialogFooter>
+          <DialogFooter className="shrink-0">
             <Button
               type="button"
               className="rounded-lg bg-zinc-900 text-white hover:bg-zinc-800"
@@ -373,11 +373,11 @@ export function PackagingOrderDialog({
         ) : null}
 
         {createdBills.length > 0 ? (
-          <div className="space-y-3">
-            <div className="rounded-lg border">
+          <div className="flex min-h-0 flex-col space-y-3">
+            <div className="min-h-0 max-h-[240px] overflow-y-auto rounded-lg border">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b bg-zinc-50 text-left text-zinc-500">
+                  <tr className="sticky top-0 z-10 border-b bg-zinc-50 text-left text-zinc-500">
                     <th className="w-10 px-3 py-2 font-medium">
                       <input
                         type="checkbox"
@@ -419,7 +419,7 @@ export function PackagingOrderDialog({
                 </tbody>
               </table>
             </div>
-            <DialogFooter className="sm:justify-end">
+            <DialogFooter className="shrink-0 sm:justify-end">
               <Button
                 type="button"
                 variant="outline"

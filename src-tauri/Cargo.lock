@@ -4752,7 +4752,7 @@ dependencies = [
 
 [[package]]
 name = "whoosh-rocket"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
