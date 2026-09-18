@@ -62,6 +62,9 @@ describe('AftersaleOrderDialog', () => {
     await user.click(screen.getByRole('button', { name: '下单' }));
 
     expect(await screen.findByText('REQ001')).toBeInTheDocument();
+    const billScroller = screen.getByText('REQ001').closest('div');
+    expect(billScroller?.className).toContain('max-h-[240px]');
+    expect(billScroller?.className).toContain('overflow-y-auto');
     expect(screen.getByRole('button', { name: '提交' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '审核' })).toBeInTheDocument();
     expect(
