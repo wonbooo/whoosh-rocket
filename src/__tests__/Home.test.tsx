@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
@@ -19,17 +19,19 @@ vi.mock('@/features/license/api', () => ({
   importLicense: vi.fn(),
 }));
 
-afterEach(() => {
-  useKingdeeStore.setState({
-    serverUrl: '',
-    acctName: '',
-    username: '',
-    password: '',
-    sessionId: null,
-    userName: null,
-    orgId: null,
+afterEach(async () => {
+  await act(async () => {
+    useKingdeeStore.setState({
+      serverUrl: '',
+      acctName: '',
+      username: '',
+      password: '',
+      sessionId: null,
+      userName: null,
+      orgId: null,
+    });
   });
-  localStorage.removeItem('kingdee-session');
+  localStorage.removeItem('kingdee');
 });
 
 function renderHome() {

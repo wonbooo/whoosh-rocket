@@ -1,5 +1,7 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { createJSONStorage, persist } from 'zustand/middleware';
+import { createRecord, whenHydrated } from '@/lib/persistedRecord';
+import { recordStorage } from '@/lib/recordStorage';
 import type { UserInfo } from '@/types/user';
 
 interface AuthState {
@@ -20,7 +22,13 @@ export const useAuthStore = create<AuthState>()(
       logout: () => set({ token: null, userInfo: null }),
     }),
     {
-      name: 'auth-storage',
+      name: 'auth',
+      storage: createJSONStorage(() => recordStorage(createRecord('auth'))),
+      skipHydration: true,
     },
   ),
 );
+
+void whenHydrated('auth').then(() => {
+  void useAuthStore.persist.rehydrate();
+});

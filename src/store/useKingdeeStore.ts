@@ -1,5 +1,7 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { createJSONStorage, persist } from 'zustand/middleware';
+import { createRecord, whenHydrated } from '@/lib/persistedRecord';
+import { recordStorage } from '@/lib/recordStorage';
 
 export interface KingdeeConnectionSettings {
   serverUrl: string;
@@ -43,7 +45,8 @@ export const useKingdeeStore = create<KingdeeState>()(
       },
     }),
     {
-      name: 'kingdee-session',
+      name: 'kingdee',
+      storage: createJSONStorage(() => recordStorage(createRecord('kingdee'))),
       partialize: (state) => ({
         serverUrl: state.serverUrl,
         acctName: state.acctName,
@@ -53,6 +56,11 @@ export const useKingdeeStore = create<KingdeeState>()(
         userName: state.userName,
         orgId: state.orgId,
       }),
+      skipHydration: true,
     },
   ),
 );
+
+void whenHydrated('kingdee').then(() => {
+  void useKingdeeStore.persist.rehydrate();
+});

@@ -1,5 +1,3 @@
-use std::path::{Path, PathBuf};
-
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::engine::general_purpose::STANDARD;
@@ -223,49 +221,35 @@ pub fn today() -> NaiveDate {
   Local::now().date_naive()
 }
 
-pub fn license_file_path(app_data_dir: &Path) -> PathBuf {
-  app_data_dir.join("license.lic")
-}
+pub const LICENSE_NAMESPACE: &str = "license";
+pub const LICENSE_KEY: &str = "document";
 
-pub fn read_license_file(path: &Path) -> Result<String, LicenseError> {
-  std::fs::read_to_string(path).map_err(|_| LicenseError::Missing)
-}
-
-pub fn write_license_file(path: &Path, text: &str) -> Result<(), LicenseError> {
-  if let Some(parent) = path.parent() {
-    std::fs::create_dir_all(parent).map_err(|err| LicenseError::Io(err.to_string()))?;
+pub fn status_from_text(
+  text: Option<&str>,
+  machine_id: &str,
+  today: NaiveDate,
+  verifying_key: &VerifyingKey,
+) -> LicenseStatus {
+  let Some(text) = text else {
+    return invalid_status(machine_id, LicenseError::Missing);
+  };
+  match validate_license_with_key(text, machine_id, today, verifying_key) {
+    Ok(doc) => LicenseStatus {
+      valid: true,
+      machine_id: machine_id.to_string(),
+      expires_at: Some(doc.expires_at),
+      reason: String::new(),
+    },
+    Err(err) => invalid_status(machine_id, err),
   }
-  std::fs::write(path, text).map_err(|err| LicenseError::Io(err.to_string()))
 }
 
-pub fn status_from_file(path: &Path, machine_id: &str, today: NaiveDate) -> LicenseStatus {
-  match read_license_file(path) {
-    Err(LicenseError::Missing) => LicenseStatus {
-      valid: false,
-      machine_id: machine_id.to_string(),
-      expires_at: None,
-      reason: LicenseError::Missing.user_message().to_string(),
-    },
-    Err(err) => LicenseStatus {
-      valid: false,
-      machine_id: machine_id.to_string(),
-      expires_at: None,
-      reason: err.user_message().to_string(),
-    },
-    Ok(text) => match validate_license(&text, machine_id, today) {
-      Ok(doc) => LicenseStatus {
-        valid: true,
-        machine_id: machine_id.to_string(),
-        expires_at: Some(doc.expires_at),
-        reason: String::new(),
-      },
-      Err(err) => LicenseStatus {
-        valid: false,
-        machine_id: machine_id.to_string(),
-        expires_at: None,
-        reason: err.user_message().to_string(),
-      },
-    },
+fn invalid_status(machine_id: &str, err: LicenseError) -> LicenseStatus {
+  LicenseStatus {
+    valid: false,
+    machine_id: machine_id.to_string(),
+    expires_at: None,
+    reason: err.user_message().to_string(),
   }
 }
 
@@ -397,13 +381,29 @@ mod tests {
   }
 
   #[test]
-  fn missing_file_status_asks_to_import() {
-    let status = status_from_file(
-      Path::new("this-license-file-does-not-exist.lic"),
+  fn missing_license_status_asks_to_import() {
+    let status = status_from_text(
+      None,
       "machine-a",
       NaiveDate::from_ymd_opt(2026, 9, 5).unwrap(),
+      &test_verify_key(),
     );
     assert!(!status.valid);
     assert_eq!(status.reason, "请先导入授权");
+  }
+
+  #[test]
+  fn stored_text_reports_valid_until_expiry() {
+    let issued = NaiveDate::from_ymd_opt(2026, 9, 5).unwrap();
+    let text = sign_document(
+      &test_key(),
+      "machine-a",
+      issued,
+      add_calendar_months(issued, 3),
+    )
+    .unwrap();
+    let status = status_from_text(Some(&text), "machine-a", issued, &test_verify_key());
+    assert!(status.valid);
+    assert_eq!(status.expires_at.as_deref(), Some("2026-12-05"));
   }
 }

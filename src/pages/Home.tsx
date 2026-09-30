@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Briefcase, FileText, Plus } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { AftersaleOrderDialog } from '@/features/aftersale/AftersaleOrderDialog';
 import { PackagingOrderDialog } from '@/features/packaging/PackagingOrderDialog';
 import { SubcontractOrderDialog } from '@/features/subcontract/SubcontractOrderDialog';
@@ -96,6 +97,12 @@ export default function Home() {
           );
         })}
       </div>
+      <p className="mt-8 text-sm text-zinc-500">
+        <Link to="/analysis" className="text-blue-600 hover:underline">
+          数据分析
+        </Link>
+        ：按维度汇总金蝶单据并绘图（原型）
+      </p>
       <AftersaleOrderDialog
         open={aftersaleOpen}
         onOpenChange={setAftersaleOpen}
