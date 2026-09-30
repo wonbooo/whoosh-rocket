@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
@@ -35,11 +35,9 @@ interface SettingsDialogProps {
 
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const { toast } = useToast();
-  const serverUrl = useKingdeeStore((state) => state.serverUrl);
-  const acctName = useKingdeeStore((state) => state.acctName);
-  const username = useKingdeeStore((state) => state.username);
-  const password = useKingdeeStore((state) => state.password);
   const setSettings = useKingdeeStore((state) => state.setSettings);
+
+  const [ready, setReady] = useState(false);
 
   const {
     register,
@@ -48,14 +46,32 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     formState: { errors },
   } = useForm<SettingsFormValues>({
     resolver: zodResolver(settingsSchema),
-    defaultValues: { serverUrl, acctName, username, password },
+    defaultValues: { serverUrl: '', acctName: '', username: '', password: '' },
   });
 
   useEffect(() => {
-    if (open) {
-      reset({ serverUrl, acctName, username, password });
+    if (!open) {
+      setReady(false);
+      return;
     }
-  }, [open, reset, serverUrl, acctName, username, password]);
+    let active = true;
+    void Promise.resolve(useKingdeeStore.persist.rehydrate()).then(() => {
+      if (!active) {
+        return;
+      }
+      const stored = useKingdeeStore.getState();
+      reset({
+        serverUrl: stored.serverUrl,
+        acctName: stored.acctName,
+        username: stored.username,
+        password: stored.password,
+      });
+      setReady(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, [open, reset]);
 
   const onSubmit = (values: SettingsFormValues) => {
     setSettings(values);
@@ -80,7 +96,8 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
           >
             <Input
               id="serverUrl"
-              autoFocus
+              autoFocus={ready}
+              disabled={!ready}
               className={fieldClass}
               {...register('serverUrl')}
             />
@@ -88,6 +105,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
           <Field id="acctName" label="账套ID" error={errors.acctName?.message}>
             <Input
               id="acctName"
+              disabled={!ready}
               className={fieldClass}
               {...register('acctName')}
             />
@@ -96,6 +114,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             <Input
               id="username"
               autoComplete="username"
+              disabled={!ready}
               className={fieldClass}
               {...register('username')}
             />
@@ -105,6 +124,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
               id="password"
               type="password"
               autoComplete="current-password"
+              disabled={!ready}
               className={fieldClass}
               {...register('password')}
             />
@@ -121,6 +141,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             <Button
               type="submit"
               className="rounded-lg bg-zinc-900 text-white hover:bg-zinc-800"
+              disabled={!ready}
             >
               保存
             </Button>
