@@ -1,22 +1,30 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Input } from '@/components/ui/input';
-import { cn } from '@/lib/utils';
 
 export interface SuggestOption {
   value: string;
   label: string;
 }
 
+export interface SuggestColors {
+  panel: string;
+  panelAlt: string;
+  border: string;
+  text: string;
+}
+
 export function SuggestInput({
   value,
   options,
   placeholder,
+  colors,
   onChange,
   onPick,
 }: {
   value: string;
   options: SuggestOption[];
   placeholder?: string;
+  colors?: SuggestColors;
   onChange: (value: string) => void;
   onPick?: (option: SuggestOption) => void;
 }) {
@@ -89,7 +97,12 @@ export function SuggestInput({
         <ul
           id={listId}
           role="listbox"
-          className="absolute z-20 mt-1 max-h-60 w-full overflow-auto rounded-md border border-zinc-200 bg-white py-1 text-sm shadow-md"
+          className="absolute z-20 mt-1 max-h-60 w-full overflow-auto rounded-md border py-1 text-sm shadow-md"
+          style={{
+            background: colors?.panel ?? '#ffffff',
+            borderColor: colors?.border ?? '#e4e4e7',
+            color: colors?.text ?? '#18181b',
+          }}
         >
           {matches.map((option, index) => (
             <li
@@ -99,10 +112,13 @@ export function SuggestInput({
             >
               <button
                 type="button"
-                className={cn(
-                  'block w-full truncate px-3 py-1.5 text-left',
-                  index === active ? 'bg-zinc-100' : 'hover:bg-zinc-50',
-                )}
+                className="block w-full truncate px-3 py-1.5 text-left"
+                style={{
+                  background:
+                    index === active
+                      ? (colors?.panelAlt ?? '#f4f4f5')
+                      : 'transparent',
+                }}
                 onMouseEnter={() => setActive(index)}
                 onMouseDown={(event) => {
                   event.preventDefault();

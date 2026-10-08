@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Cloud, LogOut, Settings } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Cloud, LogOut, Moon, Settings, Sun } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import {
   formatKingdeeError,
@@ -11,6 +11,8 @@ import { Button } from '@/components/ui/button';
 import { LicenseImportPage } from '@/features/license/LicenseImportPage';
 import { useLicense } from '@/features/license/LicenseContext';
 import { useToast } from '@/hooks/use-toast';
+import { useAnalysisStore } from '@/features/analysis/store';
+import { findTheme } from '@/features/analysis/themes';
 import { useKingdeeStore } from '@/store/useKingdeeStore';
 
 export function Header() {
@@ -26,6 +28,15 @@ export function Header() {
     ),
   );
   const { toast } = useToast();
+  const themeId = useAnalysisStore((state) => state.themeId);
+  const setTheme = useAnalysisStore((state) => state.setTheme);
+  const theme = findTheme(themeId);
+  const dark = theme.dark;
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', dark);
+    return () => document.documentElement.classList.remove('dark');
+  }, [dark]);
 
   const connected = Boolean(sessionId);
 
@@ -62,7 +73,7 @@ export function Header() {
   };
 
   return (
-    <header className="border-b bg-white">
+    <header className="sticky top-0 z-30 border-b bg-white dark:border-zinc-800 dark:bg-zinc-950">
       <div className="flex h-14 items-center justify-between px-6">
         <Link
           to="/"
@@ -81,7 +92,7 @@ export function Header() {
             <Button
               type="button"
               variant="ghost"
-              className="h-8 rounded-lg px-2.5 font-normal text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
+              className="h-8 rounded-lg px-2.5 font-normal text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
               onClick={() => setChangeLicenseOpen(true)}
             >
               变更授权
@@ -117,12 +128,36 @@ export function Header() {
               {connecting ? '连接中...' : '连接金蝶'}
             </Button>
           )}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={dark}
+            aria-label={dark ? '暗色风格' : '默认风格'}
+            title={dark ? '暗色风格，点击切回默认' : '默认风格，点击切换暗色'}
+            className="relative h-[26px] w-[52px] shrink-0 rounded-full bg-zinc-800 transition-colors"
+            onClick={() => setTheme(dark ? 'default' : 'dark')}
+          >
+            <span
+              aria-hidden="true"
+              className="absolute top-[3px] flex h-5 w-5 items-center justify-center rounded-full text-zinc-800 shadow transition-all"
+              style={{
+                left: dark ? '29px' : '3px',
+                background: dark ? '#1783FF' : '#ffffff',
+              }}
+            >
+              {dark ? (
+                <Moon className="h-3 w-3" fill="currentColor" />
+              ) : (
+                <Sun className="h-3 w-3" />
+              )}
+            </span>
+          </button>
           <Button
             type="button"
             variant="ghost"
             size="icon"
             aria-label="设置"
-            className="h-9 w-9 text-zinc-500 hover:text-zinc-800"
+            className="h-9 w-9 text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
             onClick={() => setSettingsOpen(true)}
           >
             <Settings className="h-5 w-5" />

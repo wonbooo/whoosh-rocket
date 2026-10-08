@@ -19,13 +19,42 @@ function memoryNamespace(namespace: string): Map<string, string> {
 
 function memoryRecord(namespace: string): PersistedRecord {
   const bucket = memoryNamespace(namespace);
+  const storageKey = (key: string) => `${namespace}:${key}`;
+  const persistent =
+    typeof localStorage !== 'undefined'
+      ? {
+          get: (key: string) => {
+            try {
+              return localStorage.getItem(storageKey(key));
+            } catch {
+              return null;
+            }
+          },
+          set: (key: string, value: string) => {
+            try {
+              localStorage.setItem(storageKey(key), value);
+            } catch {
+              // Storage can be disabled or full; the in-memory copy still works.
+            }
+          },
+          remove: (key: string) => {
+            try {
+              localStorage.removeItem(storageKey(key));
+            } catch {
+              // See set.
+            }
+          },
+        }
+      : null;
   return {
-    get: (key) => bucket.get(key) ?? null,
+    get: (key) => bucket.get(key) ?? persistent?.get(key) ?? null,
     set: (key, value) => {
       bucket.set(key, value);
+      persistent?.set(key, value);
     },
     remove: (key) => {
       bucket.delete(key);
+      persistent?.remove(key);
     },
   };
 }

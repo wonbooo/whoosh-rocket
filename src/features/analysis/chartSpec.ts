@@ -1,14 +1,18 @@
-import type { G2Spec } from '@antv/g2';
+import type { G2Spec, Theme } from '@antv/g2';
 import type { AggregatedRow } from '@/features/analysis/model';
 import type { ChartType, Dataset } from '@/features/analysis/types';
 
-const COLORS = [
-  '#2563eb',
-  '#16a34a',
-  '#d97706',
-  '#dc2626',
-  '#7c3aed',
-  '#0891b2',
+const FALLBACK_COLORS = [
+  '#1783FF',
+  '#00C9C9',
+  '#F0884D',
+  '#D580FF',
+  '#7863FF',
+  '#60C42D',
+  '#BD8F24',
+  '#FF80CA',
+  '#2491B3',
+  '#17C76F',
 ];
 
 const numberFormat = new Intl.NumberFormat('zh-CN', {
@@ -203,15 +207,27 @@ const SHAPES: Record<Exclude<ChartType, 'kpi'>, ChartShape> = {
   },
 };
 
+export interface ChartPalette {
+  colors: string[];
+  text: string;
+  muted: string;
+  grid: string;
+  panel?: string;
+  panelAlt?: string;
+}
+
 export function chartSpec(
   chartType: ChartType,
   data: ChartDatum[],
   split: boolean,
   legend: string,
   compact = false,
+  palette?: ChartPalette,
+  theme?: Theme,
 ): G2Spec {
   const shape = SHAPES[chartType === 'kpi' ? 'bar' : chartType];
-  const colorBy = shape.colorBy === 'series' && !split ? 'none' : shape.colorBy;
+  const colorBy =
+    shape.colorBy === 'series' && !split ? 'dimension' : shape.colorBy;
   const grouped =
     shape.transform.some((item) => item.type === 'dodgeX') && split;
   const encode: Record<string, string | undefined> = {
@@ -219,27 +235,39 @@ export function chartSpec(
     y: 'value',
     color: colorBy === 'none' ? undefined : colorBy,
   };
+  const colors = palette?.colors ?? FALLBACK_COLORS;
+  const labelColor = palette?.muted ?? '#71717a';
+  const gridColor = palette?.grid ?? 'rgba(0, 0, 0, 0.08)';
   return {
     type: shape.type,
+    theme,
     data,
     encode,
     transform: grouped
       ? shape.transform
       : shape.transform.filter((item) => item.type !== 'dodgeX'),
     coordinate: (shape.coordinate ?? { type: 'cartesian' }) as never,
-    scale: { y: { nice: true }, color: { range: COLORS } },
+    scale: { y: { nice: true }, color: { range: colors } },
     axis:
       shape.slider || chartType === 'cell' || chartType === 'heatmap'
         ? {
             x: {
               title: false,
+              labelFill: labelColor,
               labelFontSize: compact ? 10 : 12,
               labelAutoRotate: false,
               labelAutoHide: true,
               labelAutoEllipsis: true,
               size: compact ? 24 : 48,
+              grid: false,
             },
-            y: { title: false, labelFontSize: compact ? 10 : 12 },
+            y: {
+              title: false,
+              labelFill: labelColor,
+              labelFontSize: compact ? 10 : 12,
+              gridStroke: gridColor,
+              gridStrokeOpacity: 1,
+            },
           }
         : false,
     legend:
@@ -248,7 +276,15 @@ export function chartSpec(
         : {
             color: { position: 'bottom', layout: { justifyContent: 'center' } },
           },
-    slider: shape.slider && !compact ? { x: {} } : false,
+    slider:
+      shape.slider && !compact
+        ? {
+            x: {
+              labelFormatter: (value: unknown) => String(value),
+              style: { showLabel: false, showLabelOnInteraction: true },
+            },
+          }
+        : false,
     style:
       chartType === 'line' || chartType === 'radar'
         ? { lineWidth: 2 }

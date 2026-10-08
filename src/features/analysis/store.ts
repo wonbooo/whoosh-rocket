@@ -1,7 +1,9 @@
 import { create } from 'zustand';
 import { whenHydrated } from '@/lib/persistedRecord';
 import {
+  loadAnalysisSettings,
   loadAnalysisState,
+  saveAnalysisSettings,
   saveAnalysisState,
 } from '@/features/analysis/storage';
 import type {
@@ -13,6 +15,8 @@ import type {
 import type { InstantiatedBoard } from '@/features/analysis/templates';
 
 interface AnalysisStore extends AnalysisState {
+  themeId: string;
+  setTheme: (themeId: string) => void;
   saveDataset: (dataset: Dataset) => void;
   deleteDataset: (id: string) => void;
   saveDashboard: (dashboard: Dashboard) => void;
@@ -37,6 +41,11 @@ function upsert<T extends { id: string }>(items: T[], item: T): T[] {
 
 export const useAnalysisStore = create<AnalysisStore>((set) => ({
   ...loadAnalysisState(),
+  ...loadAnalysisSettings(),
+  setTheme: (themeId) => {
+    saveAnalysisSettings({ themeId });
+    set({ themeId });
+  },
   saveDataset: (dataset) =>
     set((state) =>
       persist({ ...state, datasets: upsert(state.datasets, dataset) }),
@@ -94,12 +103,21 @@ export const useAnalysisStore = create<AnalysisStore>((set) => ({
   applyTemplate: (board) =>
     set((state) =>
       persist({
-        datasets: board.datasets.reduce(upsert, state.datasets),
+        datasets: board.datasets.reduce(
+          (datasets, dataset) =>
+            datasets.some((current) => current.id === dataset.id)
+              ? datasets
+              : [...datasets, dataset],
+          state.datasets,
+        ),
         dashboards: upsert(state.dashboards, board.dashboard),
       }),
     ),
 }));
 
 void whenHydrated('analysis').then(() => {
-  useAnalysisStore.setState(loadAnalysisState());
+  useAnalysisStore.setState({
+    ...loadAnalysisState(),
+    ...loadAnalysisSettings(),
+  });
 });

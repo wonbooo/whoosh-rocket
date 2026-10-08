@@ -1,17 +1,25 @@
+import { collides } from 'react-grid-layout';
 import type { Widget } from '@/features/analysis/types';
 
-export function overlaps(
-  a: { x: number; y: number; w: number; h: number },
-  b: { x: number; y: number; w: number; h: number },
-  margin = 0,
-): boolean {
-  const width = Math.min(a.w, b.w) * margin;
-  const height = Math.min(a.h, b.h) * margin;
+interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export function overlaps(a: Rect, b: Rect): boolean {
+  return collides({ ...a, i: 'a' }, { ...b, i: 'b' });
+}
+
+export function droppedOn(card: Rect, target: Rect): boolean {
+  const centerX = card.x + card.w / 2;
+  const centerY = card.y + card.h / 2;
   return (
-    a.x + width < b.x + b.w - width &&
-    b.x + width < a.x + a.w - width &&
-    a.y + height < b.y + b.h - height &&
-    b.y + height < a.y + a.h - height
+    target.x <= centerX &&
+    centerX <= target.x + target.w &&
+    target.y <= centerY &&
+    centerY <= target.y + target.h
   );
 }
 
@@ -41,7 +49,12 @@ export function groupOverlaps(widgets: Widget[]): WidgetGroup[] {
     for (let other = index + 1; other < widgets.length; other += 1) {
       const left = widgets[index];
       const right = widgets[other];
-      if (left && right && overlaps(left.layout, right.layout, 0.3)) {
+      if (
+        left &&
+        right &&
+        (droppedOn(left.layout, right.layout) ||
+          droppedOn(right.layout, left.layout))
+      ) {
         unite(left.id, right.id);
       }
     }
