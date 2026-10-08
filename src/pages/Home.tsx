@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Briefcase, FileText, Plus } from 'lucide-react';
+import { Briefcase, FileText, LineChart, Plus } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { AftersaleOrderDialog } from '@/features/aftersale/AftersaleOrderDialog';
 import { PackagingOrderDialog } from '@/features/packaging/PackagingOrderDialog';
@@ -97,12 +97,24 @@ export default function Home() {
           );
         })}
       </div>
-      <p className="mt-8 text-sm text-zinc-500">
-        <Link to="/analysis" className="text-blue-600 hover:underline">
-          数据分析
+      <h2 className="mb-6 mt-10 flex items-center gap-2 text-lg font-medium">
+        <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-blue-600 text-xs font-semibold text-white">
+          2
+        </span>
+        数据分析
+      </h2>
+      <div className="grid gap-4 md:grid-cols-3">
+        <Link
+          to="/analysis"
+          className="rounded-xl border border-zinc-200 bg-white p-5 text-left shadow-sm transition-shadow hover:shadow-md"
+        >
+          <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-violet-50 text-violet-600">
+            <LineChart className="h-5 w-5" />
+          </div>
+          <div className="text-base font-semibold">数据分析</div>
+          <p className="mt-1 text-sm text-zinc-500">按维度汇总金蝶单据并绘图</p>
         </Link>
-        ：按维度汇总金蝶单据并绘图（原型）
-      </p>
+      </div>
       <AftersaleOrderDialog
         open={aftersaleOpen}
         onOpenChange={setAftersaleOpen}
