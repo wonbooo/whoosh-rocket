@@ -1,5 +1,7 @@
 use std::sync::Mutex;
 
+use chrono::{Local, NaiveDate};
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
@@ -49,6 +51,7 @@ fn with_db<T>(
 
 #[tauri::command]
 fn db_get(app: tauri::AppHandle, namespace: String, key: String) -> Result<Option<String>, String> {
+  require_license(&app)?;
   with_db(&app, |store| store.get(&namespace, &key))
 }
 
@@ -59,22 +62,86 @@ fn db_put(
   key: String,
   value: String,
 ) -> Result<(), String> {
+  require_license(&app)?;
   with_db(&app, |store| store.put(&namespace, &key, &value))
 }
 
 #[tauri::command]
 fn db_delete(app: tauri::AppHandle, namespace: String, key: String) -> Result<(), String> {
+  require_license(&app)?;
   with_db(&app, |store| store.delete(&namespace, &key))
 }
 
 #[tauri::command]
 fn db_list(app: tauri::AppHandle, namespace: String) -> Result<Vec<(String, String)>, String> {
+  require_license(&app)?;
   with_db(&app, |store| store.namespace_entries(&namespace))
 }
 
 fn app_license_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
   let dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
   Ok(dir.join("license.lic"))
+}
+
+fn require_license(app: &tauri::AppHandle) -> Result<(), String> {
+  let machine_id = license::machine_id().map_err(|err| err.to_string())?;
+  let text = current_license(app)?.ok_or_else(|| license::LicenseError::Missing.to_string())?;
+  license::validate_license(&text, &machine_id, trusted_today(app))
+    .map(|_| ())
+    .map_err(|err| err.to_string())
+}
+
+/// The date license checks use: a recently fetched NTP time when one is
+/// available, otherwise the local clock. A fresh network time is cached so
+/// later checks work offline; one past its trust window is refreshed.
+fn trusted_today(app: &tauri::AppHandle) -> NaiveDate {
+  let cached = cached_network_time(app);
+  if cached.is_some_and(|(fetched_at, _)| network_time_is_fresh(fetched_at)) {
+    return license::effective_today(cached);
+  }
+  if let Some(fetched_at) = license::fetch_network_time() {
+    let fetched_on = fetched_at.date_naive();
+    store_network_time(app, fetched_at, fetched_on);
+    return license::effective_today(Some((fetched_at, fetched_on)));
+  }
+  // A reading that aged out still anchors the date. Falling back to the clock
+  // here would let a changed system time win the moment the network is unreachable.
+  if cached.is_some() {
+    return license::effective_today(cached);
+  }
+  license::today()
+}
+
+const TIME_NAMESPACE: &str = "license";
+const TIME_FETCHED_AT: &str = "networkTimeAt";
+const TIME_FETCHED_ON: &str = "networkTimeDate";
+
+/// A cached network time is reusable while the local clock says it was fetched
+/// within the last six hours and not in the future.
+fn network_time_is_fresh(fetched_at: chrono::DateTime<chrono::Utc>) -> bool {
+  let age = Local::now().naive_utc() - fetched_at.naive_utc();
+  age >= chrono::TimeDelta::zero() && age <= chrono::TimeDelta::seconds(6 * 60 * 60)
+}
+
+fn cached_network_time(
+  app: &tauri::AppHandle,
+) -> Option<(chrono::DateTime<chrono::Utc>, NaiveDate)> {
+  let at = with_db(app, |store| store.get(TIME_NAMESPACE, TIME_FETCHED_AT)).ok()??;
+  let on = with_db(app, |store| store.get(TIME_NAMESPACE, TIME_FETCHED_ON)).ok()??;
+  let fetched_at = chrono::DateTime::parse_from_rfc3339(&at).ok()?.to_utc();
+  let fetched_on = NaiveDate::parse_from_str(&on, "%Y-%m-%d").ok()?;
+  Some((fetched_at, fetched_on))
+}
+
+fn store_network_time(
+  app: &tauri::AppHandle,
+  fetched_at: chrono::DateTime<chrono::Utc>,
+  fetched_on: NaiveDate,
+) {
+  let at = fetched_at.to_rfc3339();
+  let on = fetched_on.format("%Y-%m-%d").to_string();
+  let _ = with_db(app, |store| store.put(TIME_NAMESPACE, TIME_FETCHED_AT, &at));
+  let _ = with_db(app, |store| store.put(TIME_NAMESPACE, TIME_FETCHED_ON, &on));
 }
 
 fn current_license(app: &tauri::AppHandle) -> Result<Option<String>, String> {
@@ -108,7 +175,7 @@ fn get_license_status(app: tauri::AppHandle) -> Result<license::LicenseStatus, S
   Ok(license::status_from_text(
     text.as_deref(),
     &machine_id,
-    license::today(),
+    trusted_today(&app),
     &key,
   ))
 }
@@ -116,7 +183,8 @@ fn get_license_status(app: tauri::AppHandle) -> Result<license::LicenseStatus, S
 #[tauri::command]
 fn import_license(app: tauri::AppHandle, content: String) -> Result<license::LicenseStatus, String> {
   let machine_id = license::machine_id().map_err(|err| err.to_string())?;
-  license::validate_license(&content, &machine_id, license::today())
+  let today = trusted_today(&app);
+  license::validate_license(&content, &machine_id, today)
     .map_err(|err| err.to_string())?;
   let text = content.trim().to_string();
   with_db(&app, |store| {
@@ -126,7 +194,7 @@ fn import_license(app: tauri::AppHandle, content: String) -> Result<license::Lic
   Ok(license::status_from_text(
     Some(&text),
     &machine_id,
-    license::today(),
+    today,
     &key,
   ))
 }

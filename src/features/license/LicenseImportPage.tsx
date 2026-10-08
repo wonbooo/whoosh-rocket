@@ -83,8 +83,8 @@ export function LicenseImportPage({
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 px-6">
-      <div className="w-full max-w-lg rounded-xl border bg-white p-6 shadow-sm">
+    <div className="flex min-h-screen items-center justify-center bg-zinc-50 px-6 dark:bg-zinc-950">
+      <div className="w-full max-w-lg rounded-xl border bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
         <h1 className="text-lg font-semibold">{title}</h1>
         {description ? (
           <p className="mt-1 text-sm text-muted-foreground">{description}</p>
@@ -93,7 +93,7 @@ export function LicenseImportPage({
           <div>
             <div className="text-sm font-medium">本机机器码</div>
             <div className="mt-1 flex gap-2">
-              <code className="flex-1 break-all rounded-md border bg-zinc-50 px-3 py-2 text-sm">
+              <code className="flex-1 break-all rounded-md border bg-zinc-50 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800">
                 {machineId || '读取中...'}
               </code>
               <Button
@@ -111,7 +111,7 @@ export function LicenseImportPage({
           <div>
             <div className="text-sm font-medium">导入 license</div>
             <textarea
-              className="mt-1 h-28 w-full rounded-md border border-input bg-transparent p-2 font-mono text-xs"
+              className="mt-1 h-28 w-full rounded-md border border-input bg-transparent p-2 font-mono text-xs dark:border-zinc-700"
               placeholder="粘贴授权文本，或选择 .lic 文件"
               value={paste}
               onChange={(event) => setPaste(event.target.value)}

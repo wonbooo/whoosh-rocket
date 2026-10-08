@@ -26,7 +26,7 @@ const settingsSchema = z.object({
 type SettingsFormValues = z.infer<typeof settingsSchema>;
 
 const fieldClass =
-  'h-10 rounded-lg border-zinc-200 bg-white shadow-none focus-visible:ring-zinc-400';
+  'h-10 rounded-lg border-zinc-200 bg-white shadow-none focus-visible:ring-zinc-400 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100';
 
 interface SettingsDialogProps {
   open: boolean;
@@ -140,7 +140,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             </Button>
             <Button
               type="submit"
-              className="rounded-lg bg-zinc-900 text-white hover:bg-zinc-800"
+              className="rounded-lg bg-zinc-900 text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
               disabled={!ready}
             >
               保存
