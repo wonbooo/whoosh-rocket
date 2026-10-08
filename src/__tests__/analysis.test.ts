@@ -1,15 +1,15 @@
 import {
   aggregate,
-  chartTitle,
   compileFilters,
   fieldKeys,
   queryKey,
+  resolveRelativeDate,
   validateDataset,
 } from '@/features/analysis/model';
 import type { AggregatedRow } from '@/features/analysis/model';
 import { chartData, chartSpec } from '@/features/analysis/chartSpec';
 import { parseCatalog } from '@/features/analysis/catalog';
-import { queryChart } from '@/features/analysis/query';
+import { queryChart, queryMerged } from '@/features/analysis/merge';
 import {
   loadAnalysisState,
   saveAnalysisState,
@@ -21,6 +21,10 @@ import {
 } from '@/features/analysis/forms';
 import type { Dataset } from '@/features/analysis/types';
 import type { PersistedRecord } from '@/lib/persistedRecord';
+import {
+  BOARD_TEMPLATES,
+  instantiateTemplate,
+} from '@/features/analysis/templates';
 
 function dataset(overrides: Partial<Dataset> = {}): Dataset {
   return {
@@ -28,11 +32,15 @@ function dataset(overrides: Partial<Dataset> = {}): Dataset {
     name: '销售按客户',
     formId: 'SAL_SaleOrder',
     dimension: { field: 'FCustId', display: 'name' },
+    grain: null,
     series: null,
+    seriesCases: [],
     measure: { field: 'FBillAmount', display: 'value' },
     aggregation: 'sum',
+    columns: [],
     filters: [],
     limit: 20,
+    chartType: 'bar',
     ...overrides,
   };
 }
@@ -58,6 +66,46 @@ describe('dataset validation', () => {
         dataset({ filters: [{ field: 'FQty', operator: 'gt', value: 'abc' }] }),
       ).message,
     ).toBe('大于、小于比较的值必须是数字');
+  });
+
+  it('accepts a field comparison and a relative date without a literal value', () => {
+    expect(
+      validateDataset(
+        dataset({
+          filters: [
+            {
+              field: 'FInStockQty',
+              operator: 'lt',
+              value: 'FReceiveQty',
+              valueMode: 'field',
+            },
+            {
+              field: 'FDeliveryDate',
+              operator: 'lt',
+              value: 'today',
+              valueMode: 'relativeDate',
+            },
+          ],
+        }),
+      ).valid,
+    ).toBe(true);
+  });
+
+  it('rejects a field comparison against a non-identifier', () => {
+    expect(
+      validateDataset(
+        dataset({
+          filters: [
+            {
+              field: 'FInStockQty',
+              operator: 'lt',
+              value: '1 OR 1',
+              valueMode: 'field',
+            },
+          ],
+        }),
+      ).valid,
+    ).toBe(false);
   });
 
   it('accepts a complete dataset', () => {
@@ -104,6 +152,67 @@ describe('query compilation', () => {
       "FDocumentStatus = 'C''1' AND FBillAmount > 1000 AND FCustId.FName like '%甲%'",
     );
   });
+
+  it('compiles a field comparison unquoted and includes both fields', () => {
+    expect(
+      compileFilters([
+        {
+          field: 'FInStockQty',
+          operator: 'lt',
+          value: 'FReceiveQty',
+          valueMode: 'field',
+        },
+      ]),
+    ).toBe('FInStockQty < FReceiveQty');
+    expect(
+      fieldKeys(
+        dataset({
+          filters: [
+            {
+              field: 'FInStockQty',
+              operator: 'lt',
+              value: 'FReceiveQty',
+              valueMode: 'field',
+            },
+          ],
+        }),
+      ),
+    ).toBe('FCustId.FName,FBillAmount,FInStockQty,FReceiveQty');
+  });
+
+  it('resolves relative dates against a fixed day', () => {
+    const today = new Date(2026, 8, 30);
+    expect(resolveRelativeDate('today', today)).toEqual({
+      start: '2026-09-30',
+      end: '2026-09-30',
+    });
+    expect(resolveRelativeDate('thisMonth', today)).toEqual({
+      start: '2026-09-01',
+      end: '2026-09-30',
+    });
+    expect(resolveRelativeDate('last365Days', today).start).toBe('2025-09-30');
+    expect(
+      compileFilters(
+        [
+          {
+            field: 'FDeliveryDate',
+            operator: 'lt',
+            value: 'today',
+            valueMode: 'relativeDate',
+          },
+          {
+            field: 'FDate',
+            operator: 'eq',
+            value: 'thisMonth',
+            valueMode: 'relativeDate',
+          },
+        ],
+        today,
+      ),
+    ).toBe(
+      "FDeliveryDate < '2026-09-30' AND FDate >= '2026-09-01' AND FDate <= '2026-09-30'",
+    );
+  });
 });
 
 describe('aggregation', () => {
@@ -140,6 +249,76 @@ describe('aggregation', () => {
     );
     expect(result.rows).toEqual([
       { dimension: '甲公司', value: 110, series: { '': 110 } },
+    ]);
+  });
+
+  it('keeps rows whose field is below another field', () => {
+    const result = aggregate(
+      [
+        ['甲', 1, 8, 10],
+        ['乙', 1, 12, 10],
+        ['甲', 1, 5, 5],
+      ],
+      dataset({
+        filters: [
+          {
+            field: 'FInStockQty',
+            operator: 'lt',
+            value: 'FReceiveQty',
+            valueMode: 'field',
+          },
+        ],
+      }),
+    );
+    expect(result.rows).toEqual([
+      { dimension: '甲', value: 1, series: { '': 1 } },
+    ]);
+  });
+
+  it('matches a datetime cell against the whole day', () => {
+    const result = aggregate(
+      [
+        ['甲', '2026-09-30T08:15:00'],
+        ['乙', '2026-09-29T23:00:00'],
+      ],
+      dataset({
+        aggregation: 'count',
+        filters: [
+          {
+            field: 'FDeliveryDate',
+            operator: 'eq',
+            value: 'today',
+            valueMode: 'relativeDate',
+          },
+        ],
+      }),
+      new Date(2026, 8, 30),
+    );
+    expect(result.rows).toEqual([
+      { dimension: '甲', value: 1, series: { '': 1 } },
+    ]);
+  });
+
+  it('keeps rows dated before today', () => {
+    const result = aggregate(
+      [
+        ['甲', 1, '2026-09-29'],
+        ['乙', 1, '2026-10-01'],
+      ],
+      dataset({
+        filters: [
+          {
+            field: 'FDeliveryDate',
+            operator: 'lt',
+            value: 'today',
+            valueMode: 'relativeDate',
+          },
+        ],
+      }),
+      new Date(2026, 8, 30),
+    );
+    expect(result.rows).toEqual([
+      { dimension: '甲', value: 1, series: { '': 1 } },
     ]);
   });
 
@@ -204,11 +383,79 @@ describe('aggregation', () => {
     ]);
   });
 
-  it('builds a chart title from the fields', () => {
-    expect(chartTitle(dataset(), 'pie')).toBe('FBillAmount 按 FCustId（饼图）');
-    expect(chartTitle(dataset({ aggregation: 'count' }), 'kpi')).toBe(
-      '计数 按 FCustId（指标卡）',
+  it('buckets dates by month and sorts chronologically', () => {
+    const result = aggregate(
+      [
+        ['2026-08-15', 5],
+        ['2026-07-02', 3],
+        ['2026-08-30', 7],
+        ['2026-09-01', 1],
+      ],
+      dataset({
+        dimension: { field: 'FDate', display: 'value' },
+        grain: 'month',
+        limit: 2,
+      }),
     );
+    expect(result.rows.map((row) => row.dimension)).toEqual([
+      '2026-07',
+      '2026-08',
+    ]);
+    expect(result.rows[1]?.value).toBe(12);
+    expect(result.truncated).toBe(true);
+  });
+
+  it('splits rows into named series by conditions', () => {
+    const result = aggregate(
+      [
+        ['甲', '2026-09-01'],
+        ['甲', '2026-10-05'],
+        ['乙', '2026-10-20'],
+      ],
+      dataset({
+        aggregation: 'count',
+        seriesCases: [
+          {
+            label: '逾期',
+            field: 'FDeliveryDate',
+            operator: 'lt',
+            value: 'today',
+            valueMode: 'relativeDate',
+          },
+          {
+            label: '未逾期',
+            field: 'FDeliveryDate',
+            operator: 'gt',
+            value: 'today',
+            valueMode: 'relativeDate',
+          },
+        ],
+      }),
+      new Date(2026, 8, 30),
+    );
+    expect(result.rows).toEqual([
+      { dimension: '甲', value: 2, series: { 逾期: 1, 未逾期: 1 } },
+      { dimension: '乙', value: 1, series: { 未逾期: 1 } },
+    ]);
+  });
+
+  it('keeps the detail rows instead of only the totals', () => {
+    const result = aggregate(
+      [
+        ['甲', 10, 'PO001'],
+        ['乙', 4, 'PO002'],
+      ],
+      dataset({
+        columns: [
+          { field: 'FBillNo', display: 'value' },
+          { field: 'FBillAmount', display: 'value' },
+        ],
+      }),
+    );
+    expect(result.detail).toEqual([
+      { cells: ['PO001', '10'] },
+      { cells: ['PO002', '4'] },
+    ]);
   });
 });
 
@@ -250,6 +497,7 @@ describe('field catalog', () => {
     expect(catalog.fields[1]).toMatchObject({
       name: '客户',
       lookupFormId: 'BD_Customer',
+      options: [],
     });
     expect(catalog.fields[2]).toMatchObject({
       name: '物料',
@@ -258,6 +506,37 @@ describe('field catalog', () => {
     });
   });
 
+  it('reads dropdown options from the metadata and keeps the stored code', () => {
+    const catalog = parseCatalog('PUR_PurchaseOrder', {
+      Result: {
+        NeedReturnData: {
+          Entrys: [
+            {
+              Key: 'FBillHead',
+              Fields: [
+                {
+                  Key: 'FDocumentStatus',
+                  Name: [{ Key: 2052, Value: '单据状态' }],
+                  EnumObject: {
+                    Items: [
+                      { Value: 'A', Caption: [{ Key: 2052, Value: '创建' }] },
+                      { Value: 'C', Caption: [{ Key: 2052, Value: '已审核' }] },
+                    ],
+                  },
+                },
+                { Key: 'FBillNo', Name: [{ Key: 2052, Value: '单据编号' }] },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    expect(catalog.fields[0]?.options).toEqual([
+      { value: 'A', label: '创建' },
+      { value: 'C', label: '已审核' },
+    ]);
+    expect(catalog.fields[1]?.options).toEqual([]);
+  });
   it('returns no fields for an unrecognized payload', () => {
     expect(parseCatalog('X', { unexpected: true }).fields).toEqual([]);
   });
@@ -282,6 +561,7 @@ describe('analysis storage', () => {
           {
             id: 'board-1',
             name: '销售看板',
+            filters: [],
             widgets: [],
           },
         ],
@@ -292,6 +572,26 @@ describe('analysis storage', () => {
       datasets: [{ id: 'ds-1', name: '销售按客户' }],
       dashboards: [{ id: 'board-1', name: '销售看板' }],
     });
+  });
+
+  it('fills in fields missing from older saved definitions', () => {
+    const record = memoryRecord();
+    record.set(
+      'datasets',
+      JSON.stringify([{ ...dataset(), grain: undefined, columns: undefined }]),
+    );
+    record.set(
+      'dashboards',
+      JSON.stringify([{ id: 'board-1', name: '销售看板', widgets: [] }]),
+    );
+    const loaded = loadAnalysisState(record);
+    expect(loaded.datasets[0]).toMatchObject({
+      grain: null,
+      seriesCases: [],
+      columns: [],
+      chartType: 'bar',
+    });
+    expect(loaded.dashboards[0]?.filters).toEqual([]);
   });
 
   it('returns an empty state when nothing is stored', () => {
@@ -420,5 +720,110 @@ describe('query execution', () => {
     });
     expect(result.fetched).toBe(2);
     expect(result.queryTruncated).toBe(true);
+  });
+
+  it('queries each source and lines the totals up by dimension', async () => {
+    const seen: string[] = [];
+    const result = await queryMerged(
+      [
+        {
+          dataset: dataset({ formId: 'PUR_PurchaseOrder' }),
+          legend: '采购订单',
+        },
+        { dataset: dataset({ formId: 'STK_InStock' }), legend: '采购入库单' },
+      ],
+      async (params) => {
+        seen.push(params.formId);
+        return {
+          rows:
+            params.formId === 'PUR_PurchaseOrder'
+              ? [['2026-08', 100]]
+              : [
+                  ['2026-08', 40],
+                  ['2026-09', 7],
+                ],
+          truncated: false,
+        };
+      },
+    );
+    expect(seen).toEqual(['PUR_PurchaseOrder', 'STK_InStock']);
+    expect(result.rows).toEqual([
+      {
+        dimension: '2026-08',
+        value: 140,
+        series: { 采购订单: 100, 采购入库单: 40 },
+      },
+      { dimension: '2026-09', value: 7, series: { 采购入库单: 7 } },
+    ]);
+  });
+});
+
+describe('board templates', () => {
+  const template = BOARD_TEMPLATES.find(
+    (item) => item.id === 'purchase-inbound',
+  );
+
+  it('builds the purchase inbound board with its datasets', () => {
+    expect(template).toBeDefined();
+    const board = instantiateTemplate(template!);
+    expect(board.datasets).toHaveLength(14);
+    expect(board.dashboard.name).toBe('采购入库看板');
+    expect(board.dashboard.widgets).toHaveLength(14);
+    expect(board.dashboard.filters).toEqual([]);
+
+    const overdue = board.datasets.find((item) => item.name === '逾期订单数');
+    expect(overdue?.filters).toContainEqual({
+      field: 'FDocumentStatus',
+      operator: 'eq',
+      value: 'C',
+    });
+    expect(overdue?.filters).toContainEqual({
+      field: 'FDeliveryDate',
+      operator: 'lt',
+      value: 'today',
+      valueMode: 'relativeDate',
+    });
+
+    const detail = board.datasets.find(
+      (item) => item.name === '今日应入库订单明细',
+    );
+    expect(detail?.columns).toContainEqual({
+      field: 'FSupplierId',
+      display: 'name',
+    });
+    expect(detail?.columns).toContainEqual({
+      field: 'FBillNo',
+      display: 'value',
+    });
+
+    const orderAmount = board.datasets.find(
+      (item) => item.name === '采购金额·订单',
+    );
+    const widget = board.dashboard.widgets.find(
+      (item) => item.datasetId === orderAmount?.id,
+    );
+    expect(widget?.sources).toEqual([
+      board.datasets.find((item) => item.name === '采购金额·入库')?.id,
+      board.datasets.find((item) => item.name === '采购金额·退料')?.id,
+    ]);
+    expect(widget?.chartType).toBe('bar-stacked');
+
+    const ids = new Set([
+      ...board.datasets.map((item) => item.id),
+      ...board.dashboard.widgets.map((item) => item.id),
+      board.dashboard.id,
+    ]);
+    expect(ids.size).toBe(
+      board.datasets.length + board.dashboard.widgets.length + 1,
+    );
+  });
+
+  it('produces a fresh copy on every instantiation', () => {
+    const first = instantiateTemplate(template!);
+    const second = instantiateTemplate(template!);
+    expect(first.dashboard.id).not.toBe(second.dashboard.id);
+    expect(first.datasets.map((item) => item.id)).not.toEqual(
+      second.datasets.map((item) => item.id),
+    );
   });
 });

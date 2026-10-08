@@ -1,19 +1,28 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import GridLayout, { useContainerWidth } from 'react-grid-layout';
+import type { LayoutItem } from 'react-grid-layout';
 import { formatKingdeeError } from '@/apis/kingdee/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { SuggestInput } from '@/components/shared/SuggestInput';
 import { ChartView } from '@/features/analysis/ChartView';
+import type { ColumnHeader } from '@/features/analysis/ChartView';
 import type { FieldCatalog } from '@/features/analysis/catalog';
+import { knownOptions } from '@/features/analysis/enums';
 import { FORM_OPTIONS, formLabel } from '@/features/analysis/forms';
 import { CHART_TYPES } from '@/features/analysis/chartSpec';
-import { validateDataset } from '@/features/analysis/model';
+import { RELATIVE_DATES, validateDataset } from '@/features/analysis/model';
 import {
   loadCatalog,
-  queryChart,
+  runMerged,
+  runQuery,
   type QueryChartResult,
 } from '@/features/analysis/query';
 import { useAnalysisStore } from '@/features/analysis/store';
+import {
+  BOARD_TEMPLATES,
+  instantiateTemplate,
+} from '@/features/analysis/templates';
 import type {
   ChartType,
   Dashboard,
@@ -22,6 +31,9 @@ import type {
   FieldRef,
   Filter,
   FilterOperator,
+  FilterValueMode,
+  RelativeDate,
+  SeriesCase,
   Widget,
 } from '@/features/analysis/types';
 import { useToast } from '@/hooks/use-toast';
@@ -35,6 +47,19 @@ const FILTER_OPERATORS: { value: FilterOperator; label: string }[] = [
   { value: 'lt', label: '小于' },
 ];
 
+const VALUE_MODES: { value: FilterValueMode; label: string }[] = [
+  { value: 'literal', label: '固定值' },
+  { value: 'field', label: '字段' },
+  { value: 'relativeDate', label: '相对日期' },
+];
+
+const RELATIVE_DATE_LABELS: Record<RelativeDate, string> = {
+  today: '今天',
+  thisMonth: '本月',
+  last6Months: '最近 6 个月',
+  last365Days: '最近 365 天',
+};
+
 function newId(): string {
   return crypto.randomUUID();
 }
@@ -45,11 +70,15 @@ function blankDataset(): Dataset {
     name: '',
     formId: '',
     dimension: { field: '', display: 'name' },
+    grain: null,
     series: null,
+    seriesCases: [],
     measure: { field: '', display: 'value' },
     aggregation: 'sum',
+    columns: [],
     filters: [],
     limit: 20,
+    chartType: 'bar',
   };
 }
 
@@ -61,6 +90,7 @@ export function AnalysisPage() {
   const deleteDataset = useAnalysisStore((state) => state.deleteDataset);
   const saveDashboard = useAnalysisStore((state) => state.saveDashboard);
   const deleteDashboard = useAnalysisStore((state) => state.deleteDashboard);
+  const applyTemplate = useAnalysisStore((state) => state.applyTemplate);
 
   const [editing, setEditing] = useState<Dataset | null>(null);
   const [openDashboard, setOpenDashboard] = useState<string | null>(null);
@@ -68,7 +98,7 @@ export function AnalysisPage() {
   const dashboard = dashboards.find((item) => item.id === openDashboard);
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-8">
+    <div className="px-6 py-8">
       <h1 className="mb-6 text-lg font-medium">数据分析</h1>
       {dashboard ? (
         <DashboardView
@@ -102,10 +132,26 @@ export function AnalysisPage() {
             const created: Dashboard = {
               id: newId(),
               name: `看板 ${dashboards.length + 1}`,
+              filters: [],
               widgets: [],
             };
             saveDashboard(created);
             setOpenDashboard(created.id);
+          }}
+          onApplyTemplate={(templateId) => {
+            const template = BOARD_TEMPLATES.find(
+              (item) => item.id === templateId,
+            );
+            if (!template) {
+              return;
+            }
+            const board = instantiateTemplate(template);
+            applyTemplate(board);
+            setOpenDashboard(board.dashboard.id);
+            toast({
+              title: '已从模板创建',
+              description: `${board.dashboard.name}，含 ${board.datasets.length} 个数据集，可直接编辑微调`,
+            });
           }}
         />
       )}
@@ -121,6 +167,7 @@ function Overview({
   onDeleteDataset,
   onOpenDashboard,
   onCreateDashboard,
+  onApplyTemplate,
 }: {
   datasets: Dataset[];
   dashboards: Dashboard[];
@@ -129,6 +176,7 @@ function Overview({
   onDeleteDataset: (id: string) => void;
   onOpenDashboard: (id: string) => void;
   onCreateDashboard: () => void;
+  onApplyTemplate: (templateId: string) => void;
 }) {
   return (
     <div className="grid gap-6 md:grid-cols-2">
@@ -180,9 +228,28 @@ function Overview({
       <section className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm">
         <header className="mb-4 flex items-center justify-between">
           <h2 className="text-sm font-medium">看板</h2>
-          <Button type="button" size="sm" onClick={onCreateDashboard}>
-            新建看板
-          </Button>
+          <div className="flex gap-2">
+            <select
+              aria-label="从模板创建"
+              className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
+              value=""
+              onChange={(event) => {
+                if (event.target.value) {
+                  onApplyTemplate(event.target.value);
+                }
+              }}
+            >
+              <option value="">从模板创建</option>
+              {BOARD_TEMPLATES.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name}
+                </option>
+              ))}
+            </select>
+            <Button type="button" size="sm" onClick={onCreateDashboard}>
+              新建看板
+            </Button>
+          </div>
         </header>
         {dashboards.length === 0 ? (
           <p className="text-sm text-zinc-500">还没有看板。</p>
@@ -205,6 +272,180 @@ function Overview({
           </ul>
         )}
       </section>
+    </div>
+  );
+}
+
+function fieldOptions(catalog: FieldCatalog | null) {
+  return (catalog?.fields ?? []).map((field) => ({
+    value: field.key,
+    label: `${field.name}（${field.key}）`,
+  }));
+}
+
+function valueOptions(catalog: FieldCatalog | null, field: string) {
+  const fromCatalog = catalog?.fields.find((item) => item.key === field.trim());
+  return fromCatalog && fromCatalog.options.length > 0
+    ? fromCatalog.options
+    : knownOptions(field);
+}
+
+function FilterValueInput({
+  field,
+  value,
+  catalog,
+  onChange,
+}: {
+  field: string;
+  value: string;
+  catalog: FieldCatalog | null;
+  onChange: (value: string) => void;
+}) {
+  const options = valueOptions(catalog, field);
+  if (options.length === 0) {
+    return (
+      <Input
+        className="flex-1"
+        placeholder="值"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    );
+  }
+  return (
+    <select
+      aria-label="值"
+      className="h-9 flex-1 rounded-md border border-input bg-transparent px-2 text-sm"
+      value={options.some((option) => option.value === value) ? value : ''}
+      onChange={(event) => onChange(event.target.value)}
+    >
+      <option value="">请选择</option>
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function FilterRows({
+  filters,
+  catalog,
+  onChange,
+}: {
+  filters: Filter[];
+  catalog: FieldCatalog | null;
+  onChange: (filters: Filter[]) => void;
+}) {
+  const updateAt = (index: number, patch: Partial<Filter>) =>
+    onChange(
+      filters.map((filter, current) =>
+        current === index ? { ...filter, ...patch } : filter,
+      ),
+    );
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-sm text-zinc-600">过滤条件</span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() =>
+            onChange([...filters, { field: '', operator: 'eq', value: '' }])
+          }
+        >
+          添加条件
+        </Button>
+      </div>
+      <div className="flex flex-col gap-2">
+        {filters.map((filter, index) => (
+          <div key={index} className="flex items-center gap-2">
+            <div className="flex-1">
+              <SuggestInput
+                value={filter.field}
+                placeholder="字段"
+                options={fieldOptions(catalog)}
+                onChange={(field) => updateAt(index, { field })}
+              />
+            </div>
+            <select
+              className="h-9 w-24 shrink-0 rounded-md border border-input bg-transparent px-2 text-sm"
+              value={filter.operator}
+              onChange={(event) =>
+                updateAt(index, {
+                  operator: event.target.value as FilterOperator,
+                })
+              }
+            >
+              {FILTER_OPERATORS.map((operator) => (
+                <option key={operator.value} value={operator.value}>
+                  {operator.label}
+                </option>
+              ))}
+            </select>
+            <select
+              className="h-9 w-28 shrink-0 rounded-md border border-input bg-transparent px-2 text-sm"
+              value={filter.valueMode ?? 'literal'}
+              onChange={(event) => {
+                const valueMode = event.target.value as FilterValueMode;
+                updateAt(index, {
+                  valueMode,
+                  value: valueMode === 'relativeDate' ? 'today' : '',
+                });
+              }}
+            >
+              {VALUE_MODES.map((mode) => (
+                <option key={mode.value} value={mode.value}>
+                  {mode.label}
+                </option>
+              ))}
+            </select>
+            {(filter.valueMode ?? 'literal') === 'relativeDate' ? (
+              <select
+                className="h-9 flex-1 rounded-md border border-input bg-transparent px-2 text-sm"
+                value={filter.value}
+                onChange={(event) =>
+                  updateAt(index, { value: event.target.value })
+                }
+              >
+                {RELATIVE_DATES.map((token) => (
+                  <option key={token} value={token}>
+                    {RELATIVE_DATE_LABELS[token]}
+                  </option>
+                ))}
+              </select>
+            ) : (filter.valueMode ?? 'literal') === 'field' ? (
+              <div className="flex-1">
+                <SuggestInput
+                  value={filter.value}
+                  placeholder="比较字段"
+                  options={fieldOptions(catalog)}
+                  onChange={(value) => updateAt(index, { value })}
+                />
+              </div>
+            ) : (
+              <FilterValueInput
+                field={filter.field}
+                value={filter.value}
+                catalog={catalog}
+                onChange={(value) => updateAt(index, { value })}
+              />
+            )}
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() =>
+                onChange(filters.filter((_, current) => current !== index))
+              }
+            >
+              移除
+            </Button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -288,7 +529,6 @@ function DatasetEditor({
   const [catalog, setCatalog] = useState<FieldCatalog | null>(null);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
   const [preview, setPreview] = useState<QueryChartResult | null>(null);
-  const [previewChart, setPreviewChart] = useState<ChartType>('bar');
   const [querying, setQuerying] = useState(false);
 
   const update = (patch: Partial<Dataset>) =>
@@ -345,9 +585,9 @@ function DatasetEditor({
     }
     setQuerying(true);
     try {
-      const result = await queryChart(draft);
+      const result = await runQuery(draft);
       setPreview(result);
-      if (result.rows.length === 0) {
+      if (result.rows.length === 0 && result.detail.length === 0) {
         toast({
           title: '没有可绘制的数据',
           description:
@@ -367,6 +607,13 @@ function DatasetEditor({
     }
   };
 
+  const updateCase = (index: number, patch: Partial<SeriesCase>) =>
+    update({
+      seriesCases: draft.seriesCases.map((item, current) =>
+        current === index ? { ...item, ...patch } : item,
+      ),
+    });
+
   const handleSave = () => {
     const check = validateDataset(draft);
     if (!check.valid) {
@@ -375,13 +622,6 @@ function DatasetEditor({
     }
     onSave(draft);
   };
-
-  const updateFilter = (index: number, patch: Partial<Filter>) =>
-    update({
-      filters: draft.filters.map((filter, current) =>
-        current === index ? { ...filter, ...patch } : filter,
-      ),
-    });
 
   return (
     <div className="flex flex-col gap-6">
@@ -429,6 +669,17 @@ function DatasetEditor({
           catalog={catalog}
           onChange={(dimension) => update({ dimension })}
         />
+        <label className="flex items-end gap-2 pb-2 text-sm text-zinc-600">
+          <input
+            type="checkbox"
+            className="mb-0.5"
+            checked={draft.grain === 'month'}
+            onChange={(event) =>
+              update({ grain: event.target.checked ? 'month' : null })
+            }
+          />
+          按月分组（维度为日期时）
+        </label>
         <FieldInput
           label="拆分系列（可选）"
           field={draft.series ?? { field: '', display: 'name' }}
@@ -473,9 +724,9 @@ function DatasetEditor({
           图表类型
           <select
             className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
-            value={previewChart}
+            value={draft.chartType}
             onChange={(event) =>
-              setPreviewChart(event.target.value as ChartType)
+              update({ chartType: event.target.value as ChartType })
             }
           >
             {CHART_TYPES.map((type) => (
@@ -487,67 +738,76 @@ function DatasetEditor({
         </label>
         <div className="md:col-span-2">
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-sm text-zinc-600">过滤条件</span>
+            <span className="text-sm text-zinc-600">
+              明细列（可选，生成明细表）
+            </span>
             <Button
               type="button"
               variant="ghost"
               size="sm"
               onClick={() =>
                 update({
-                  filters: [
-                    ...draft.filters,
-                    { field: '', operator: 'eq', value: '' },
-                  ],
+                  columns: [...draft.columns, { field: '', display: 'value' }],
                 })
               }
             >
-              添加条件
+              添加列
             </Button>
           </div>
           <div className="flex flex-col gap-2">
-            {draft.filters.map((filter, index) => (
+            {draft.columns.map((column, index) => (
               <div key={index} className="flex items-center gap-2">
                 <div className="flex-1">
                   <SuggestInput
-                    value={filter.field}
-                    placeholder="字段"
-                    options={(catalog?.fields ?? []).map((field) => ({
-                      value: field.key,
-                      label: `${field.name}（${field.key}）`,
-                    }))}
-                    onChange={(field) => updateFilter(index, { field })}
+                    value={column.field}
+                    placeholder="列字段"
+                    options={fieldOptions(catalog)}
+                    onChange={(field) =>
+                      update({
+                        columns: draft.columns.map((item, current) =>
+                          current === index
+                            ? {
+                                ...item,
+                                field,
+                                display:
+                                  field === item.field ? item.display : 'name',
+                              }
+                            : item,
+                        ),
+                      })
+                    }
                   />
                 </div>
                 <select
-                  className="h-9 w-28 shrink-0 rounded-md border border-input bg-transparent px-2 text-sm"
-                  value={filter.operator}
+                  aria-label="列显示"
+                  className="h-9 w-24 shrink-0 rounded-md border border-input bg-transparent px-2 text-sm"
+                  value={column.display}
                   onChange={(event) =>
-                    updateFilter(index, {
-                      operator: event.target.value as FilterOperator,
+                    update({
+                      columns: draft.columns.map((item, current) =>
+                        current === index
+                          ? {
+                              ...item,
+                              display: event.target.value as FieldDisplay,
+                            }
+                          : item,
+                      ),
                     })
                   }
                 >
-                  {FILTER_OPERATORS.map((operator) => (
-                    <option key={operator.value} value={operator.value}>
-                      {operator.label}
+                  {DISPLAYS.map((display) => (
+                    <option key={display.value} value={display.value}>
+                      {display.label}
                     </option>
                   ))}
                 </select>
-                <Input
-                  className="flex-1"
-                  placeholder="值"
-                  value={filter.value}
-                  onChange={(event) =>
-                    updateFilter(index, { value: event.target.value })
-                  }
-                />
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
                   onClick={() =>
                     update({
-                      filters: draft.filters.filter(
+                      columns: draft.columns.filter(
                         (_, current) => current !== index,
                       ),
                     })
@@ -558,6 +818,125 @@ function DatasetEditor({
               </div>
             ))}
           </div>
+        </div>
+        <div className="md:col-span-2">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-sm text-zinc-600">
+              条件拆分系列（可选，按条件给行归类）
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() =>
+                update({
+                  seriesCases: [
+                    ...draft.seriesCases,
+                    { label: '', field: '', operator: 'lt', value: '' },
+                  ],
+                })
+              }
+            >
+              添加条件
+            </Button>
+          </div>
+          <div className="flex flex-col gap-2">
+            {draft.seriesCases.map((item, index) => (
+              <div key={index} className="flex items-center gap-2">
+                <Input
+                  className="w-28 shrink-0"
+                  placeholder="系列名"
+                  value={item.label}
+                  onChange={(event) =>
+                    updateCase(index, { label: event.target.value })
+                  }
+                />
+                <div className="flex-1">
+                  <SuggestInput
+                    value={item.field}
+                    placeholder="字段"
+                    options={fieldOptions(catalog)}
+                    onChange={(field) => updateCase(index, { field })}
+                  />
+                </div>
+                <select
+                  className="h-9 w-24 shrink-0 rounded-md border border-input bg-transparent px-2 text-sm"
+                  value={item.operator}
+                  onChange={(event) =>
+                    updateCase(index, {
+                      operator: event.target.value as FilterOperator,
+                    })
+                  }
+                >
+                  {FILTER_OPERATORS.map((operator) => (
+                    <option key={operator.value} value={operator.value}>
+                      {operator.label}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="h-9 w-28 shrink-0 rounded-md border border-input bg-transparent px-2 text-sm"
+                  value={item.valueMode ?? 'literal'}
+                  onChange={(event) => {
+                    const valueMode = event.target.value as FilterValueMode;
+                    updateCase(index, {
+                      valueMode,
+                      value: valueMode === 'relativeDate' ? 'today' : '',
+                    });
+                  }}
+                >
+                  {VALUE_MODES.map((mode) => (
+                    <option key={mode.value} value={mode.value}>
+                      {mode.label}
+                    </option>
+                  ))}
+                </select>
+                {(item.valueMode ?? 'literal') === 'relativeDate' ? (
+                  <select
+                    className="h-9 flex-1 rounded-md border border-input bg-transparent px-2 text-sm"
+                    value={item.value}
+                    onChange={(event) =>
+                      updateCase(index, { value: event.target.value })
+                    }
+                  >
+                    {RELATIVE_DATES.map((token) => (
+                      <option key={token} value={token}>
+                        {RELATIVE_DATE_LABELS[token]}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <FilterValueInput
+                    field={item.field}
+                    value={item.value}
+                    catalog={catalog}
+                    onChange={(value) => updateCase(index, { value })}
+                  />
+                )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    update({
+                      seriesCases: draft.seriesCases.filter(
+                        (_, current) => current !== index,
+                      ),
+                    })
+                  }
+                >
+                  移除
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="md:col-span-2">
+          <FilterRows
+            filters={draft.filters}
+            catalog={catalog}
+            onChange={(filters) => update({ filters })}
+          />
         </div>
         <div className="flex gap-2 md:col-span-2">
           <Button
@@ -578,17 +957,30 @@ function DatasetEditor({
           </Button>
         </div>
       </div>
-      {preview && preview.rows.length > 0 ? (
+      {preview && (preview.rows.length > 0 || preview.detail.length > 0) ? (
         <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm">
           <ChartView
             dataset={draft}
-            chartType={previewChart}
+            chartType={draft.chartType}
             result={preview}
+            headers={columnHeaders(catalog, draft)}
           />
         </div>
       ) : null}
     </div>
   );
+}
+
+function columnHeaders(
+  catalog: FieldCatalog | null,
+  dataset: Dataset,
+): ColumnHeader[] {
+  return dataset.columns.map((column) => ({
+    field: column.field,
+    label:
+      catalog?.fields.find((item) => item.key === column.field.trim())?.name ??
+      column.field,
+  }));
 }
 
 function DashboardView({
@@ -607,11 +999,56 @@ function DashboardView({
   const saveWidget = useAnalysisStore((state) => state.saveWidget);
   const deleteWidget = useAnalysisStore((state) => state.deleteWidget);
   const [adding, setAdding] = useState(false);
+  const [filterFormId, setFilterFormId] = useState('');
+  const [filterCatalog, setFilterCatalog] = useState<FieldCatalog | null>(null);
+  const [loadingFilterFields, setLoadingFilterFields] = useState(false);
   const [widgetDraft, setWidgetDraft] = useState({
     title: '',
     datasetId: datasets[0]?.id ?? '',
-    chartType: 'bar' as ChartType,
+    chartType: (datasets[0]?.chartType ?? 'bar') as ChartType,
+    extraIds: [] as string[],
   });
+
+  const { width, containerRef, mounted } = useContainerWidth();
+
+  const filterForms = [
+    ...new Map(
+      dashboard.widgets
+        .map((widget) => datasets.find((item) => item.id === widget.datasetId))
+        .filter((item): item is Dataset => Boolean(item))
+        .map((item) => [item.formId, item.formId]),
+    ).values(),
+  ];
+
+  const handleLoadFilterFields = async (formId: string) => {
+    setFilterFormId(formId);
+    if (!formId) {
+      setFilterCatalog(null);
+      return;
+    }
+    setLoadingFilterFields(true);
+    try {
+      setFilterCatalog(await loadCatalog(formId));
+    } catch (error) {
+      toast({
+        title: '读取字段失败',
+        description: formatKingdeeError(error),
+        variant: 'destructive',
+      });
+    } finally {
+      setLoadingFilterFields(false);
+    }
+  };
+
+  const layout: LayoutItem[] = dashboard.widgets.map((widget, index) => ({
+    i: widget.id,
+    x: widget.layout.w > 1 ? widget.layout.x : (index % 2) * 6,
+    y: widget.layout.w > 1 ? widget.layout.y : Math.floor(index / 2) * 8,
+    w: Math.max(widget.layout.w, 2),
+    h: Math.max(widget.layout.h, 2),
+    minW: 2,
+    minH: widget.chartType === 'kpi' ? 2 : 6,
+  }));
 
   const handleAddWidget = () => {
     if (!widgetDraft.datasetId) {
@@ -623,7 +1060,13 @@ function DashboardView({
       title: widgetDraft.title.trim() || '未命名图表',
       datasetId: widgetDraft.datasetId,
       chartType: widgetDraft.chartType,
-      layout: { x: 0, y: dashboard.widgets.length, w: 1, h: 1 },
+      sources: widgetDraft.extraIds,
+      layout: {
+        x: (dashboard.widgets.length % 2) * 6,
+        y: Infinity,
+        w: 6,
+        h: 8,
+      },
     };
     saveWidget(dashboard.id, widget);
     setAdding(false);
@@ -667,12 +1110,15 @@ function DashboardView({
             <select
               className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"
               value={widgetDraft.datasetId}
-              onChange={(event) =>
+              onChange={(event) => {
+                const datasetId = event.target.value;
+                const chosen = datasets.find((item) => item.id === datasetId);
                 setWidgetDraft({
                   ...widgetDraft,
-                  datasetId: event.target.value,
-                })
-              }
+                  datasetId,
+                  chartType: chosen?.chartType ?? widgetDraft.chartType,
+                });
+              }}
             >
               {datasets.map((dataset) => (
                 <option key={dataset.id} value={dataset.id}>
@@ -681,8 +1127,32 @@ function DashboardView({
               ))}
             </select>
           </label>
+          <label className="flex flex-1 flex-col gap-1.5 text-sm text-zinc-600">
+            合并更多数据集（可选，按维度对齐）
+            <select
+              multiple
+              className="h-20 rounded-md border border-input bg-transparent px-2 text-sm"
+              value={widgetDraft.extraIds}
+              onChange={(event) =>
+                setWidgetDraft({
+                  ...widgetDraft,
+                  extraIds: [...event.target.selectedOptions].map(
+                    (option) => option.value,
+                  ),
+                })
+              }
+            >
+              {datasets
+                .filter((dataset) => dataset.id !== widgetDraft.datasetId)
+                .map((dataset) => (
+                  <option key={dataset.id} value={dataset.id}>
+                    {dataset.name}
+                  </option>
+                ))}
+            </select>
+          </label>
           <label className="flex flex-col gap-1.5 text-sm text-zinc-600">
-            图表类型
+            图表类型（默认用数据集的，可改）
             <select
               className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"
               value={widgetDraft.chartType}
@@ -712,38 +1182,118 @@ function DashboardView({
           </Button>
         </div>
       ) : null}
+      <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+        <div className="mb-3 flex items-center gap-2">
+          <span className="text-sm text-zinc-600">过滤字段来源</span>
+          <select
+            aria-label="过滤字段来源"
+            className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"
+            value={filterFormId}
+            onChange={(event) => {
+              void handleLoadFilterFields(event.target.value);
+            }}
+          >
+            <option value="">选择表单后可下拉选字段</option>
+            {filterForms.map((formId) => (
+              <option key={formId} value={formId}>
+                {formLabel(
+                  FORM_OPTIONS.find((option) => option.id === formId) ?? {
+                    id: formId,
+                    name: formId,
+                  },
+                )}
+              </option>
+            ))}
+          </select>
+          {loadingFilterFields ? (
+            <span className="text-xs text-zinc-500">读取中...</span>
+          ) : null}
+        </div>
+        <FilterRows
+          filters={dashboard.filters}
+          catalog={filterCatalog}
+          onChange={(filters) => saveDashboard({ ...dashboard, filters })}
+        />
+      </div>
       {dashboard.widgets.length === 0 ? (
         <p className="text-sm text-zinc-500">看板是空的，添加一个图表。</p>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2">
-          {dashboard.widgets.map((widget) => {
-            const dataset = datasets.find(
-              (item) => item.id === widget.datasetId,
-            );
-            return (
-              <div
-                key={widget.id}
-                className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm"
-              >
-                <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-sm font-medium">{widget.title}</h3>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => deleteWidget(dashboard.id, widget.id)}
-                  >
-                    移除
-                  </Button>
-                </div>
-                {dataset ? (
-                  <WidgetChart dataset={dataset} chartType={widget.chartType} />
-                ) : (
-                  <p className="text-sm text-zinc-500">数据集已被删除。</p>
-                )}
-              </div>
-            );
-          })}
+        <div ref={containerRef}>
+          {mounted ? (
+            <GridLayout
+              width={width}
+              layout={layout}
+              gridConfig={{ cols: 12, rowHeight: 32, margin: [16, 16] }}
+              dragConfig={{
+                enabled: true,
+                bounded: false,
+                handle: '.widget-drag',
+                cancel: '',
+                threshold: 3,
+              }}
+              resizeConfig={{ enabled: true, handles: ['se'] }}
+              onLayoutChange={(next) => {
+                const widgets = dashboard.widgets.map((widget) => {
+                  const item = next.find((entry) => entry.i === widget.id);
+                  return item
+                    ? {
+                        ...widget,
+                        layout: { x: item.x, y: item.y, w: item.w, h: item.h },
+                      }
+                    : widget;
+                });
+                if (
+                  widgets.some(
+                    (widget, index) =>
+                      widget.layout !== dashboard.widgets[index]?.layout,
+                  )
+                ) {
+                  saveDashboard({ ...dashboard, widgets });
+                }
+              }}
+            >
+              {dashboard.widgets.map((widget) => {
+                const dataset = datasets.find(
+                  (item) => item.id === widget.datasetId,
+                );
+                return (
+                  <div key={widget.id}>
+                    <div className="flex h-full flex-col rounded-xl border border-zinc-200 bg-white p-3 shadow-sm">
+                      <div className="widget-drag mb-2 flex cursor-move items-center justify-between">
+                        <h3 className="text-sm font-medium">{widget.title}</h3>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => deleteWidget(dashboard.id, widget.id)}
+                        >
+                          移除
+                        </Button>
+                      </div>
+                      <div className="min-h-0 flex-1 overflow-auto">
+                        {dataset ? (
+                          <WidgetChart
+                            dataset={dataset}
+                            chartType={widget.chartType}
+                            sources={widget.sources
+                              .map((id) =>
+                                datasets.find((item) => item.id === id),
+                              )
+                              .filter((item): item is Dataset => Boolean(item))}
+                            filters={dashboard.filters}
+                          />
+                        ) : (
+                          <p className="text-sm text-zinc-500">
+                            数据集已被删除。
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </GridLayout>
+          ) : null}
         </div>
       )}
     </div>
@@ -753,53 +1303,98 @@ function DashboardView({
 function WidgetChart({
   dataset,
   chartType,
+  sources,
+  filters,
 }: {
   dataset: Dataset;
   chartType: ChartType;
+  sources: Dataset[];
+  filters: Filter[];
 }) {
   const sessionId = useKingdeeStore((state) => state.sessionId);
   const { toast } = useToast();
   const [result, setResult] = useState<QueryChartResult | null>(null);
+  const [headers, setHeaders] = useState<ColumnHeader[] | undefined>(undefined);
   const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
 
-  const handleQuery = async () => {
+  const filterKey = JSON.stringify(filters);
+
+  useEffect(() => {
     if (!sessionId) {
-      toast({
-        title: '请先连接金蝶',
-        description: '点击右上角「连接金蝶」完成登录后再查询',
-      });
       return;
     }
+    let cancelled = false;
     setLoading(true);
-    try {
-      setResult(await queryChart(dataset));
-    } catch (error) {
-      toast({
-        title: '查询失败',
-        description: formatKingdeeError(error),
-        variant: 'destructive',
+    setFailed(false);
+    const run = async () => {
+      const queried = sources.length
+        ? await runMerged(
+            [dataset, ...sources].map((source) => ({
+              dataset: { ...source, filters: [...source.filters, ...filters] },
+              legend: source.name,
+            })),
+          )
+        : await runQuery({
+            ...dataset,
+            filters: [...dataset.filters, ...filters],
+          });
+      if (cancelled) {
+        return;
+      }
+      setResult(queried);
+      if (dataset.columns.length > 0) {
+        const catalog = await loadCatalog(dataset.formId).catch(() => null);
+        if (!cancelled) {
+          setHeaders(columnHeaders(catalog, dataset));
+        }
+      }
+    };
+    run()
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setFailed(true);
+          toast({
+            title: '查询失败',
+            description: formatKingdeeError(error),
+            variant: 'destructive',
+          });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
       });
-    } finally {
-      setLoading(false);
-    }
-  };
+    return () => {
+      cancelled = true;
+    };
+    // 过滤条件按内容比较，避免看板每次保存都触发重复查询。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, dataset, chartType, filterKey]);
 
-  if (!result) {
+  if (!sessionId) {
     return (
-      <Button
-        type="button"
-        variant="outline"
-        disabled={loading}
-        onClick={() => {
-          void handleQuery();
-        }}
-      >
-        {loading ? '查询中...' : '查询'}
-      </Button>
+      <p className="text-sm text-zinc-500">
+        请先点击右上角「连接金蝶」完成登录。
+      </p>
     );
   }
-  if (result.rows.length === 0) {
+  if (loading && !result) {
+    return <p className="text-sm text-zinc-500">查询中...</p>;
+  }
+  if (failed && !result) {
+    return <p className="text-sm text-zinc-500">查询失败。</p>;
+  }
+  if (!result || (result.rows.length === 0 && result.detail.length === 0)) {
     return <p className="text-sm text-zinc-500">没有可绘制的数据。</p>;
   }
-  return <ChartView dataset={dataset} chartType={chartType} result={result} />;
+  return (
+    <ChartView
+      dataset={dataset}
+      chartType={chartType}
+      result={result}
+      headers={headers}
+    />
+  );
 }

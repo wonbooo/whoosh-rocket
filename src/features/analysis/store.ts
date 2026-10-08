@@ -10,6 +10,7 @@ import type {
   Dataset,
   Widget,
 } from '@/features/analysis/types';
+import type { InstantiatedBoard } from '@/features/analysis/templates';
 
 interface AnalysisStore extends AnalysisState {
   saveDataset: (dataset: Dataset) => void;
@@ -18,6 +19,7 @@ interface AnalysisStore extends AnalysisState {
   deleteDashboard: (id: string) => void;
   saveWidget: (dashboardId: string, widget: Widget) => void;
   deleteWidget: (dashboardId: string, widgetId: string) => void;
+  applyTemplate: (board: InstantiatedBoard) => void;
 }
 
 function persist(state: AnalysisState): AnalysisState {
@@ -87,6 +89,13 @@ export const useAnalysisStore = create<AnalysisStore>((set) => ({
               }
             : dashboard,
         ),
+      }),
+    ),
+  applyTemplate: (board) =>
+    set((state) =>
+      persist({
+        datasets: board.datasets.reduce(upsert, state.datasets),
+        dashboards: upsert(state.dashboards, board.dashboard),
       }),
     ),
 }));
