@@ -50,6 +50,10 @@ export interface SeriesCase {
   valueMode?: FilterValueMode;
 }
 
+export interface DatasetOrigin {
+  templateId: string;
+}
+
 export interface Dataset {
   id: string;
   name: string;
@@ -64,6 +68,7 @@ export interface Dataset {
   filters: Filter[];
   limit: number;
   chartType: ChartType;
+  origin?: DatasetOrigin;
 }
 
 export interface WidgetLayout {

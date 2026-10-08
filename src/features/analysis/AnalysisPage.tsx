@@ -5,6 +5,8 @@ import { formatKingdeeError } from '@/apis/kingdee/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { SuggestInput } from '@/components/shared/SuggestInput';
+import type { SuggestColors } from '@/components/shared/SuggestInput';
+import { SelectMenu } from '@/components/shared/SelectMenu';
 import { ChartView } from '@/features/analysis/ChartView';
 import type { ColumnHeader } from '@/features/analysis/ChartView';
 import type { FieldCatalog } from '@/features/analysis/catalog';
@@ -19,7 +21,13 @@ import {
   type QueryChartResult,
 } from '@/features/analysis/query';
 import { useAnalysisStore } from '@/features/analysis/store';
-import { groupOverlaps, overlaps } from '@/features/analysis/overlap';
+import { findTheme } from '@/features/analysis/themes';
+import type { BoardTheme } from '@/features/analysis/themes';
+import {
+  groupOverlaps,
+  droppedOn,
+  overlaps,
+} from '@/features/analysis/overlap';
 import {
   BOARD_TEMPLATES,
   instantiateTemplate,
@@ -61,8 +69,48 @@ const RELATIVE_DATE_LABELS: Record<RelativeDate, string> = {
   last365Days: '最近 365 天',
 };
 
+function boardPalette(theme: BoardTheme) {
+  return {
+    colors: theme.colors,
+    text: theme.text,
+    muted: theme.textMuted,
+    grid: theme.dark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(15, 23, 42, 0.1)',
+    panel: theme.panel,
+    panelAlt: theme.panelAlt,
+  };
+}
+
+function panelStyle(theme: BoardTheme): React.CSSProperties {
+  return {
+    background: theme.panel,
+    borderColor: theme.border,
+    color: theme.text,
+    boxShadow: theme.dark
+      ? `0 0 24px ${theme.accent}14`
+      : '0 1px 2px rgba(0, 0, 0, 0.05)',
+  };
+}
+
+function suggestColors(theme: BoardTheme): SuggestColors {
+  return {
+    panel: theme.panel,
+    panelAlt: theme.panelAlt,
+    border: theme.border,
+    text: theme.text,
+  };
+}
+
 function newId(): string {
   return crypto.randomUUID();
+}
+
+function dashboardsUsing(dashboards: Dashboard[], datasetId: string): number {
+  return dashboards.filter((dashboard) =>
+    dashboard.widgets.some(
+      (widget) =>
+        widget.datasetId === datasetId || widget.sources.includes(datasetId),
+    ),
+  ).length;
 }
 
 function blankDataset(): Dataset {
@@ -92,6 +140,8 @@ export function AnalysisPage() {
   const saveDashboard = useAnalysisStore((state) => state.saveDashboard);
   const deleteDashboard = useAnalysisStore((state) => state.deleteDashboard);
   const applyTemplate = useAnalysisStore((state) => state.applyTemplate);
+  const themeId = useAnalysisStore((state) => state.themeId);
+  const theme = findTheme(themeId);
 
   const [editing, setEditing] = useState<Dataset | null>(null);
   const [openDashboard, setOpenDashboard] = useState<string | null>(null);
@@ -99,12 +149,22 @@ export function AnalysisPage() {
   const dashboard = dashboards.find((item) => item.id === openDashboard);
 
   return (
-    <div className="px-6 py-8">
-      <h1 className="mb-6 text-lg font-medium">数据分析</h1>
+    <div
+      className="min-h-[calc(100vh-4rem)] px-6 py-8"
+      style={{
+        background: theme.background,
+        color: theme.text,
+        colorScheme: theme.dark ? 'dark' : 'light',
+      }}
+    >
+      <div className="mb-6 flex items-center justify-between">
+        <h1 className="text-lg font-medium">数据分析</h1>
+      </div>
       {dashboard ? (
         <DashboardView
           dashboard={dashboard}
           datasets={datasets}
+          theme={theme}
           onBack={() => setOpenDashboard(null)}
           onDelete={() => {
             deleteDashboard(dashboard.id);
@@ -114,6 +174,7 @@ export function AnalysisPage() {
       ) : editing ? (
         <DatasetEditor
           dataset={editing}
+          theme={theme}
           onCancel={() => setEditing(null)}
           onSave={(dataset) => {
             saveDataset(dataset);
@@ -125,9 +186,21 @@ export function AnalysisPage() {
         <Overview
           datasets={datasets}
           dashboards={dashboards}
+          theme={theme}
           onEditDataset={setEditing}
           onCreateDataset={() => setEditing(blankDataset())}
-          onDeleteDataset={deleteDataset}
+          onDeleteDataset={(id) => {
+            const used = dashboardsUsing(dashboards, id);
+            const dataset = datasets.find((item) => item.id === id);
+            if (dataset?.origin && used > 0) {
+              toast({
+                title: '无法删除',
+                description: `该数据集被 ${used} 个看板使用，先删除对应看板后再删`,
+              });
+              return;
+            }
+            deleteDataset(id);
+          }}
           onOpenDashboard={setOpenDashboard}
           onCreateDashboard={() => {
             const created: Dashboard = {
@@ -163,6 +236,7 @@ export function AnalysisPage() {
 function Overview({
   datasets,
   dashboards,
+  theme,
   onEditDataset,
   onCreateDataset,
   onDeleteDataset,
@@ -172,6 +246,7 @@ function Overview({
 }: {
   datasets: Dataset[];
   dashboards: Dashboard[];
+  theme: BoardTheme;
   onEditDataset: (dataset: Dataset) => void;
   onCreateDataset: () => void;
   onDeleteDataset: (id: string) => void;
@@ -179,9 +254,10 @@ function Overview({
   onCreateDashboard: () => void;
   onApplyTemplate: (templateId: string) => void;
 }) {
+  const muted = { color: theme.textMuted };
   return (
     <div className="grid gap-6 md:grid-cols-2">
-      <section className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm">
+      <section className="rounded-xl border p-5" style={panelStyle(theme)}>
         <header className="mb-4 flex items-center justify-between">
           <h2 className="text-sm font-medium">数据集</h2>
           <Button type="button" size="sm" onClick={onCreateDataset}>
@@ -189,18 +265,30 @@ function Overview({
           </Button>
         </header>
         {datasets.length === 0 ? (
-          <p className="text-sm text-zinc-500">还没有数据集。</p>
+          <p className="text-sm" style={muted}>
+            还没有数据集。
+          </p>
         ) : (
           <ul className="flex flex-col gap-2">
             {datasets.map((dataset) => (
               <li
                 key={dataset.id}
-                className="flex items-center justify-between rounded-lg border border-zinc-200 px-3 py-2"
+                className="flex items-center justify-between rounded-lg border px-3 py-2"
+                style={{ borderColor: theme.border }}
               >
                 <div>
                   <div className="text-sm font-medium">{dataset.name}</div>
-                  <div className="text-xs text-zinc-500">
+                  <div className="text-xs" style={muted}>
                     {dataset.formId} · {dataset.dimension.field}
+                    {dataset.origin
+                      ? ` · 模板：${
+                          BOARD_TEMPLATES.find(
+                            (template) =>
+                              template.id === dataset.origin?.templateId,
+                          )?.name ?? dataset.origin.templateId
+                        }`
+                      : ''}
+                    {` · 被 ${dashboardsUsing(dashboards, dataset.id)} 个看板使用`}
                   </div>
                 </div>
                 <div className="flex gap-1">
@@ -226,45 +314,56 @@ function Overview({
           </ul>
         )}
       </section>
-      <section className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm">
+      <section className="rounded-xl border p-5" style={panelStyle(theme)}>
         <header className="mb-4 flex items-center justify-between">
           <h2 className="text-sm font-medium">看板</h2>
           <div className="flex gap-2">
-            <select
+            <SelectMenu
               aria-label="从模板创建"
-              className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
+              className="w-32 text-xs"
               value=""
-              onChange={(event) => {
-                if (event.target.value) {
-                  onApplyTemplate(event.target.value);
+              placeholder="从模板创建"
+              colors={suggestColors(theme)}
+              options={[
+                { value: '', label: '从模板创建' },
+                ...BOARD_TEMPLATES.map((template) => ({
+                  value: template.id,
+                  label: template.name,
+                })),
+              ]}
+              onChange={(value) => {
+                if (value) {
+                  onApplyTemplate(value);
                 }
               }}
-            >
-              <option value="">从模板创建</option>
-              {BOARD_TEMPLATES.map((template) => (
-                <option key={template.id} value={template.id}>
-                  {template.name}
-                </option>
-              ))}
-            </select>
+            />
             <Button type="button" size="sm" onClick={onCreateDashboard}>
               新建看板
             </Button>
           </div>
         </header>
         {dashboards.length === 0 ? (
-          <p className="text-sm text-zinc-500">还没有看板。</p>
+          <p className="text-sm" style={muted}>
+            还没有看板。
+          </p>
         ) : (
           <ul className="flex flex-col gap-2">
             {dashboards.map((dashboard) => (
               <li key={dashboard.id}>
                 <button
                   type="button"
-                  className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-left hover:bg-zinc-50"
+                  className="w-full rounded-lg border px-3 py-2 text-left"
+                  style={{ borderColor: theme.border }}
+                  onMouseEnter={(event) => {
+                    event.currentTarget.style.background = theme.panelAlt;
+                  }}
+                  onMouseLeave={(event) => {
+                    event.currentTarget.style.background = 'transparent';
+                  }}
                   onClick={() => onOpenDashboard(dashboard.id)}
                 >
                   <div className="text-sm font-medium">{dashboard.name}</div>
-                  <div className="text-xs text-zinc-500">
+                  <div className="text-xs" style={muted}>
                     {dashboard.widgets.length} 个图表
                   </div>
                 </button>
@@ -295,11 +394,13 @@ function FilterValueInput({
   field,
   value,
   catalog,
+  theme,
   onChange,
 }: {
   field: string;
   value: string;
   catalog: FieldCatalog | null;
+  theme: BoardTheme;
   onChange: (value: string) => void;
 }) {
   const options = valueOptions(catalog, field);
@@ -314,29 +415,27 @@ function FilterValueInput({
     );
   }
   return (
-    <select
+    <SelectMenu
       aria-label="值"
-      className="h-9 flex-1 rounded-md border border-input bg-transparent px-2 text-sm"
+      className="flex-1"
       value={options.some((option) => option.value === value) ? value : ''}
-      onChange={(event) => onChange(event.target.value)}
-    >
-      <option value="">请选择</option>
-      {options.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
-    </select>
+      placeholder="请选择"
+      colors={suggestColors(theme)}
+      options={[{ value: '', label: '请选择' }, ...options]}
+      onChange={onChange}
+    />
   );
 }
 
 function FilterRows({
   filters,
   catalog,
+  theme,
   onChange,
 }: {
   filters: Filter[];
   catalog: FieldCatalog | null;
+  theme: BoardTheme;
   onChange: (filters: Filter[]) => void;
 }) {
   const updateAt = (index: number, patch: Partial<Filter>) =>
@@ -348,7 +447,9 @@ function FilterRows({
   return (
     <div>
       <div className="mb-2 flex items-center justify-between">
-        <span className="text-sm text-zinc-600">过滤条件</span>
+        <span className="text-sm" style={{ color: theme.textMuted }}>
+          过滤条件
+        </span>
         <Button
           type="button"
           variant="ghost"
@@ -368,61 +469,50 @@ function FilterRows({
                 value={filter.field}
                 placeholder="字段"
                 options={fieldOptions(catalog)}
+                colors={suggestColors(theme)}
                 onChange={(field) => updateAt(index, { field })}
               />
             </div>
-            <select
-              className="h-9 w-24 shrink-0 rounded-md border border-input bg-transparent px-2 text-sm"
+            <SelectMenu
+              className="w-24 shrink-0"
               value={filter.operator}
-              onChange={(event) =>
-                updateAt(index, {
-                  operator: event.target.value as FilterOperator,
-                })
+              colors={suggestColors(theme)}
+              options={FILTER_OPERATORS}
+              onChange={(operator) =>
+                updateAt(index, { operator: operator as FilterOperator })
               }
-            >
-              {FILTER_OPERATORS.map((operator) => (
-                <option key={operator.value} value={operator.value}>
-                  {operator.label}
-                </option>
-              ))}
-            </select>
-            <select
-              className="h-9 w-28 shrink-0 rounded-md border border-input bg-transparent px-2 text-sm"
+            />
+            <SelectMenu
+              className="w-28 shrink-0"
               value={filter.valueMode ?? 'literal'}
-              onChange={(event) => {
-                const valueMode = event.target.value as FilterValueMode;
+              colors={suggestColors(theme)}
+              options={VALUE_MODES}
+              onChange={(mode) => {
+                const valueMode = mode as FilterValueMode;
                 updateAt(index, {
                   valueMode,
                   value: valueMode === 'relativeDate' ? 'today' : '',
                 });
               }}
-            >
-              {VALUE_MODES.map((mode) => (
-                <option key={mode.value} value={mode.value}>
-                  {mode.label}
-                </option>
-              ))}
-            </select>
+            />
             {(filter.valueMode ?? 'literal') === 'relativeDate' ? (
-              <select
-                className="h-9 flex-1 rounded-md border border-input bg-transparent px-2 text-sm"
+              <SelectMenu
+                className="flex-1"
                 value={filter.value}
-                onChange={(event) =>
-                  updateAt(index, { value: event.target.value })
-                }
-              >
-                {RELATIVE_DATES.map((token) => (
-                  <option key={token} value={token}>
-                    {RELATIVE_DATE_LABELS[token]}
-                  </option>
-                ))}
-              </select>
+                colors={suggestColors(theme)}
+                options={RELATIVE_DATES.map((token) => ({
+                  value: token,
+                  label: RELATIVE_DATE_LABELS[token],
+                }))}
+                onChange={(value) => updateAt(index, { value })}
+              />
             ) : (filter.valueMode ?? 'literal') === 'field' ? (
               <div className="flex-1">
                 <SuggestInput
                   value={filter.value}
                   placeholder="比较字段"
                   options={fieldOptions(catalog)}
+                  colors={suggestColors(theme)}
                   onChange={(value) => updateAt(index, { value })}
                 />
               </div>
@@ -431,6 +521,7 @@ function FilterRows({
                 field={filter.field}
                 value={filter.value}
                 catalog={catalog}
+                theme={theme}
                 onChange={(value) => updateAt(index, { value })}
               />
             )}
@@ -461,18 +552,23 @@ function FieldInput({
   label,
   field,
   catalog,
+  theme,
   onChange,
 }: {
   label: string;
   field: FieldRef;
   catalog: FieldCatalog | null;
+  theme: BoardTheme;
   onChange: (field: FieldRef) => void;
 }) {
   const lookup = catalog?.fields.find((item) => item.key === field.field);
   const showDisplay =
     Boolean(lookup?.lookupFormId) || field.field.includes('.');
   return (
-    <div className="flex flex-col gap-1.5 text-sm text-zinc-600">
+    <div
+      className="flex flex-col gap-1.5 text-sm"
+      style={{ color: theme.textMuted }}
+    >
       {label}
       <div className="flex gap-2">
         <div className="flex-1">
@@ -483,6 +579,7 @@ function FieldInput({
               value: item.key,
               label: `${item.name}（${item.key}）`,
             }))}
+            colors={suggestColors(theme)}
             onChange={(next) =>
               onChange({
                 field: next,
@@ -492,23 +589,16 @@ function FieldInput({
           />
         </div>
         {showDisplay ? (
-          <select
+          <SelectMenu
             aria-label={`${label}显示`}
-            className="h-9 w-24 shrink-0 rounded-md border border-input bg-transparent px-2 text-sm"
+            className="w-24 shrink-0"
             value={field.display}
-            onChange={(event) =>
-              onChange({
-                ...field,
-                display: event.target.value as FieldDisplay,
-              })
+            colors={suggestColors(theme)}
+            options={DISPLAYS}
+            onChange={(display) =>
+              onChange({ ...field, display: display as FieldDisplay })
             }
-          >
-            {DISPLAYS.map((display) => (
-              <option key={display.value} value={display.value}>
-                {display.label}
-              </option>
-            ))}
-          </select>
+          />
         ) : null}
       </div>
     </div>
@@ -517,10 +607,12 @@ function FieldInput({
 
 function DatasetEditor({
   dataset,
+  theme,
   onCancel,
   onSave,
 }: {
   dataset: Dataset;
+  theme: BoardTheme;
   onCancel: () => void;
   onSave: (dataset: Dataset) => void;
 }) {
@@ -624,10 +716,15 @@ function DatasetEditor({
     onSave(draft);
   };
 
+  const muted = { color: theme.textMuted };
+
   return (
     <div className="flex flex-col gap-6">
-      <div className="grid gap-4 rounded-xl border border-zinc-200 bg-white p-5 shadow-sm md:grid-cols-2">
-        <label className="flex flex-col gap-1.5 text-sm text-zinc-600">
+      <div
+        className="grid gap-4 rounded-xl border p-5 md:grid-cols-2"
+        style={panelStyle(theme)}
+      >
+        <label className="flex flex-col gap-1.5 text-sm" style={muted}>
           数据集名称
           <Input
             value={draft.name}
@@ -635,7 +732,7 @@ function DatasetEditor({
           />
         </label>
         <div className="flex items-end gap-2">
-          <label className="flex flex-1 flex-col gap-1.5 text-sm text-zinc-600">
+          <label className="flex flex-1 flex-col gap-1.5 text-sm" style={muted}>
             表单
             <SuggestInput
               value={draft.formId}
@@ -644,6 +741,7 @@ function DatasetEditor({
                 value: option.id,
                 label: formLabel(option),
               }))}
+              colors={suggestColors(theme)}
               onChange={(formId) => {
                 update({ formId });
                 setCatalog(null);
@@ -668,9 +766,10 @@ function DatasetEditor({
           label="维度（横轴）"
           field={draft.dimension}
           catalog={catalog}
+          theme={theme}
           onChange={(dimension) => update({ dimension })}
         />
-        <label className="flex items-end gap-2 pb-2 text-sm text-zinc-600">
+        <label className="flex items-end gap-2 pb-2 text-sm" style={muted}>
           <input
             type="checkbox"
             className="mb-0.5"
@@ -685,6 +784,7 @@ function DatasetEditor({
           label="拆分系列（可选）"
           field={draft.series ?? { field: '', display: 'name' }}
           catalog={catalog}
+          theme={theme}
           onChange={(series) =>
             update({ series: series.field.trim() ? series : null })
           }
@@ -693,24 +793,24 @@ function DatasetEditor({
           label="度量（数值）"
           field={draft.measure}
           catalog={catalog}
+          theme={theme}
           onChange={(measure) => update({ measure })}
         />
-        <label className="flex flex-col gap-1.5 text-sm text-zinc-600">
+        <label className="flex flex-col gap-1.5 text-sm" style={muted}>
           聚合方式
-          <select
-            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+          <SelectMenu
             value={draft.aggregation}
-            onChange={(event) =>
-              update({
-                aggregation: event.target.value as Dataset['aggregation'],
-              })
+            colors={suggestColors(theme)}
+            options={[
+              { value: 'sum', label: '求和' },
+              { value: 'count', label: '计数' },
+            ]}
+            onChange={(aggregation) =>
+              update({ aggregation: aggregation as Dataset['aggregation'] })
             }
-          >
-            <option value="sum">求和</option>
-            <option value="count">计数</option>
-          </select>
+          />
         </label>
-        <label className="flex flex-col gap-1.5 text-sm text-zinc-600">
+        <label className="flex flex-col gap-1.5 text-sm" style={muted}>
           显示组数上限
           <Input
             type="number"
@@ -721,25 +821,20 @@ function DatasetEditor({
             }
           />
         </label>
-        <label className="flex flex-col gap-1.5 text-sm text-zinc-600">
+        <label className="flex flex-col gap-1.5 text-sm" style={muted}>
           图表类型
-          <select
-            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+          <SelectMenu
             value={draft.chartType}
-            onChange={(event) =>
-              update({ chartType: event.target.value as ChartType })
+            colors={suggestColors(theme)}
+            options={CHART_TYPES}
+            onChange={(chartType) =>
+              update({ chartType: chartType as ChartType })
             }
-          >
-            {CHART_TYPES.map((type) => (
-              <option key={type.value} value={type.value}>
-                {type.label}
-              </option>
-            ))}
-          </select>
+          />
         </label>
         <div className="md:col-span-2">
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-sm text-zinc-600">
+            <span className="text-sm" style={muted}>
               明细列（可选，生成明细表）
             </span>
             <Button
@@ -763,6 +858,7 @@ function DatasetEditor({
                     value={column.field}
                     placeholder="列字段"
                     options={fieldOptions(catalog)}
+                    colors={suggestColors(theme)}
                     onChange={(field) =>
                       update({
                         columns: draft.columns.map((item, current) =>
@@ -779,29 +875,22 @@ function DatasetEditor({
                     }
                   />
                 </div>
-                <select
+                <SelectMenu
                   aria-label="列显示"
-                  className="h-9 w-24 shrink-0 rounded-md border border-input bg-transparent px-2 text-sm"
+                  className="w-24 shrink-0"
                   value={column.display}
-                  onChange={(event) =>
+                  colors={suggestColors(theme)}
+                  options={DISPLAYS}
+                  onChange={(display) =>
                     update({
                       columns: draft.columns.map((item, current) =>
                         current === index
-                          ? {
-                              ...item,
-                              display: event.target.value as FieldDisplay,
-                            }
+                          ? { ...item, display: display as FieldDisplay }
                           : item,
                       ),
                     })
                   }
-                >
-                  {DISPLAYS.map((display) => (
-                    <option key={display.value} value={display.value}>
-                      {display.label}
-                    </option>
-                  ))}
-                </select>
+                />
                 <Button
                   type="button"
                   variant="ghost"
@@ -822,7 +911,7 @@ function DatasetEditor({
         </div>
         <div className="md:col-span-2">
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-sm text-zinc-600">
+            <span className="text-sm" style={muted}>
               条件拆分系列（可选，按条件给行归类）
             </span>
             <Button
@@ -857,60 +946,49 @@ function DatasetEditor({
                     value={item.field}
                     placeholder="字段"
                     options={fieldOptions(catalog)}
+                    colors={suggestColors(theme)}
                     onChange={(field) => updateCase(index, { field })}
                   />
                 </div>
-                <select
-                  className="h-9 w-24 shrink-0 rounded-md border border-input bg-transparent px-2 text-sm"
+                <SelectMenu
+                  className="w-24 shrink-0"
                   value={item.operator}
-                  onChange={(event) =>
-                    updateCase(index, {
-                      operator: event.target.value as FilterOperator,
-                    })
+                  colors={suggestColors(theme)}
+                  options={FILTER_OPERATORS}
+                  onChange={(operator) =>
+                    updateCase(index, { operator: operator as FilterOperator })
                   }
-                >
-                  {FILTER_OPERATORS.map((operator) => (
-                    <option key={operator.value} value={operator.value}>
-                      {operator.label}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  className="h-9 w-28 shrink-0 rounded-md border border-input bg-transparent px-2 text-sm"
+                />
+                <SelectMenu
+                  className="w-28 shrink-0"
                   value={item.valueMode ?? 'literal'}
-                  onChange={(event) => {
-                    const valueMode = event.target.value as FilterValueMode;
+                  colors={suggestColors(theme)}
+                  options={VALUE_MODES}
+                  onChange={(mode) => {
+                    const valueMode = mode as FilterValueMode;
                     updateCase(index, {
                       valueMode,
                       value: valueMode === 'relativeDate' ? 'today' : '',
                     });
                   }}
-                >
-                  {VALUE_MODES.map((mode) => (
-                    <option key={mode.value} value={mode.value}>
-                      {mode.label}
-                    </option>
-                  ))}
-                </select>
+                />
                 {(item.valueMode ?? 'literal') === 'relativeDate' ? (
-                  <select
-                    className="h-9 flex-1 rounded-md border border-input bg-transparent px-2 text-sm"
+                  <SelectMenu
+                    className="flex-1"
                     value={item.value}
-                    onChange={(event) =>
-                      updateCase(index, { value: event.target.value })
-                    }
-                  >
-                    {RELATIVE_DATES.map((token) => (
-                      <option key={token} value={token}>
-                        {RELATIVE_DATE_LABELS[token]}
-                      </option>
-                    ))}
-                  </select>
+                    colors={suggestColors(theme)}
+                    options={RELATIVE_DATES.map((token) => ({
+                      value: token,
+                      label: RELATIVE_DATE_LABELS[token],
+                    }))}
+                    onChange={(value) => updateCase(index, { value })}
+                  />
                 ) : (
                   <FilterValueInput
                     field={item.field}
                     value={item.value}
                     catalog={catalog}
+                    theme={theme}
                     onChange={(value) => updateCase(index, { value })}
                   />
                 )}
@@ -936,6 +1014,7 @@ function DatasetEditor({
           <FilterRows
             filters={draft.filters}
             catalog={catalog}
+            theme={theme}
             onChange={(filters) => update({ filters })}
           />
         </div>
@@ -959,12 +1038,14 @@ function DatasetEditor({
         </div>
       </div>
       {preview && (preview.rows.length > 0 || preview.detail.length > 0) ? (
-        <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm">
+        <div className="h-80 rounded-xl border p-5" style={panelStyle(theme)}>
           <ChartView
             dataset={draft}
             chartType={draft.chartType}
             result={preview}
             headers={columnHeaders(catalog, draft)}
+            palette={boardPalette(theme)}
+            dark={theme.dark}
           />
         </div>
       ) : null}
@@ -987,11 +1068,13 @@ function columnHeaders(
 function DashboardView({
   dashboard,
   datasets,
+  theme,
   onBack,
   onDelete,
 }: {
   dashboard: Dashboard;
   datasets: Dataset[];
+  theme: BoardTheme;
   onBack: () => void;
   onDelete: () => void;
 }) {
@@ -1082,11 +1165,14 @@ function DashboardView({
     setAdding(false);
   };
 
+  const muted = { color: theme.textMuted };
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <input
-          className="rounded-md border border-transparent bg-transparent px-2 text-lg font-medium hover:border-zinc-200 focus:border-input focus:outline-none"
+          className="rounded-md border border-transparent bg-transparent px-2 text-lg font-medium focus:border-input focus:outline-none"
+          style={{ color: theme.text }}
           value={dashboard.name}
           onChange={(event) =>
             saveDashboard({ ...dashboard, name: event.target.value })
@@ -1105,8 +1191,11 @@ function DashboardView({
         </div>
       </div>
       {adding ? (
-        <div className="flex items-end gap-2 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
-          <label className="flex flex-1 flex-col gap-1.5 text-sm text-zinc-600">
+        <div
+          className="flex items-end gap-2 rounded-xl border p-4"
+          style={panelStyle(theme)}
+        >
+          <label className="flex flex-1 flex-col gap-1.5 text-sm" style={muted}>
             标题
             <Input
               value={widgetDraft.title}
@@ -1115,13 +1204,16 @@ function DashboardView({
               }
             />
           </label>
-          <label className="flex flex-1 flex-col gap-1.5 text-sm text-zinc-600">
+          <label className="flex flex-1 flex-col gap-1.5 text-sm" style={muted}>
             数据集
-            <select
-              className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"
+            <SelectMenu
               value={widgetDraft.datasetId}
-              onChange={(event) => {
-                const datasetId = event.target.value;
+              colors={suggestColors(theme)}
+              options={datasets.map((dataset) => ({
+                value: dataset.id,
+                label: dataset.name,
+              }))}
+              onChange={(datasetId) => {
                 const chosen = datasets.find((item) => item.id === datasetId);
                 setWidgetDraft({
                   ...widgetDraft,
@@ -1129,56 +1221,56 @@ function DashboardView({
                   chartType: chosen?.chartType ?? widgetDraft.chartType,
                 });
               }}
-            >
-              {datasets.map((dataset) => (
-                <option key={dataset.id} value={dataset.id}>
-                  {dataset.name}
-                </option>
-              ))}
-            </select>
+            />
           </label>
-          <label className="flex flex-1 flex-col gap-1.5 text-sm text-zinc-600">
+          <label className="flex flex-1 flex-col gap-1.5 text-sm" style={muted}>
             合并更多数据集（可选，按维度对齐）
-            <select
-              multiple
-              className="h-20 rounded-md border border-input bg-transparent px-2 text-sm"
-              value={widgetDraft.extraIds}
-              onChange={(event) =>
-                setWidgetDraft({
-                  ...widgetDraft,
-                  extraIds: [...event.target.selectedOptions].map(
-                    (option) => option.value,
-                  ),
-                })
-              }
+            <div
+              className="flex h-20 flex-col gap-1 overflow-auto rounded-md border px-2 py-1.5 text-sm"
+              style={{ borderColor: theme.border }}
             >
-              {datasets
-                .filter((dataset) => dataset.id !== widgetDraft.datasetId)
-                .map((dataset) => (
-                  <option key={dataset.id} value={dataset.id}>
-                    {dataset.name}
-                  </option>
-                ))}
-            </select>
+              {datasets.filter(
+                (dataset) => dataset.id !== widgetDraft.datasetId,
+              ).length === 0 ? (
+                <span style={muted}>没有其他数据集</span>
+              ) : (
+                datasets
+                  .filter((dataset) => dataset.id !== widgetDraft.datasetId)
+                  .map((dataset) => (
+                    <label key={dataset.id} className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={widgetDraft.extraIds.includes(dataset.id)}
+                        onChange={(event) =>
+                          setWidgetDraft({
+                            ...widgetDraft,
+                            extraIds: event.target.checked
+                              ? [...widgetDraft.extraIds, dataset.id]
+                              : widgetDraft.extraIds.filter(
+                                  (id) => id !== dataset.id,
+                                ),
+                          })
+                        }
+                      />
+                      {dataset.name}
+                    </label>
+                  ))
+              )}
+            </div>
           </label>
-          <label className="flex flex-col gap-1.5 text-sm text-zinc-600">
+          <label className="flex flex-col gap-1.5 text-sm" style={muted}>
             图表类型（默认用数据集的，可改）
-            <select
-              className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"
+            <SelectMenu
               value={widgetDraft.chartType}
-              onChange={(event) =>
+              colors={suggestColors(theme)}
+              options={CHART_TYPES}
+              onChange={(chartType) =>
                 setWidgetDraft({
                   ...widgetDraft,
-                  chartType: event.target.value as ChartType,
+                  chartType: chartType as ChartType,
                 })
               }
-            >
-              {CHART_TYPES.map((type) => (
-                <option key={type.value} value={type.value}>
-                  {type.label}
-                </option>
-              ))}
-            </select>
+            />
           </label>
           <Button type="button" onClick={handleAddWidget}>
             确定
@@ -1192,41 +1284,50 @@ function DashboardView({
           </Button>
         </div>
       ) : null}
-      <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+      <div className="rounded-xl border p-4" style={panelStyle(theme)}>
         <div className="mb-3 flex items-center gap-2">
-          <span className="text-sm text-zinc-600">过滤字段来源</span>
-          <select
+          <span className="text-sm" style={muted}>
+            过滤字段来源
+          </span>
+          <SelectMenu
             aria-label="过滤字段来源"
-            className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"
+            className="w-64"
             value={filterFormId}
-            onChange={(event) => {
-              void handleLoadFilterFields(event.target.value);
-            }}
-          >
-            <option value="">选择表单后可下拉选字段</option>
-            {filterForms.map((formId) => (
-              <option key={formId} value={formId}>
-                {formLabel(
+            placeholder="选择表单后可下拉选字段"
+            colors={suggestColors(theme)}
+            options={[
+              { value: '', label: '选择表单后可下拉选字段' },
+              ...filterForms.map((formId) => ({
+                value: formId,
+                label: formLabel(
                   FORM_OPTIONS.find((option) => option.id === formId) ?? {
                     id: formId,
                     name: formId,
                   },
-                )}
-              </option>
-            ))}
-          </select>
+                ),
+              })),
+            ]}
+            onChange={(formId) => {
+              void handleLoadFilterFields(formId);
+            }}
+          />
           {loadingFilterFields ? (
-            <span className="text-xs text-zinc-500">读取中...</span>
+            <span className="text-xs" style={muted}>
+              读取中...
+            </span>
           ) : null}
         </div>
         <FilterRows
           filters={dashboard.filters}
           catalog={filterCatalog}
+          theme={theme}
           onChange={(filters) => saveDashboard({ ...dashboard, filters })}
         />
       </div>
       {dashboard.widgets.length === 0 ? (
-        <p className="text-sm text-zinc-500">看板是空的，添加一个图表。</p>
+        <p className="text-sm" style={muted}>
+          看板是空的，添加一个图表。
+        </p>
       ) : (
         <div ref={containerRef}>
           {mounted ? (
@@ -1246,12 +1347,47 @@ function DashboardView({
               onLayoutChange={(next) => {
                 const widgets = dashboard.widgets.map((widget) => {
                   const item = next.find((entry) => entry.i === widget.id);
-                  return item
-                    ? {
-                        ...widget,
-                        layout: { x: item.x, y: item.y, w: item.w, h: item.h },
-                      }
-                    : widget;
+                  const group = groups.find(
+                    (candidate) =>
+                      candidate.members.length > 1 &&
+                      candidate.members.some(
+                        (member) => member.id === widget.id,
+                      ),
+                  );
+                  if (group && widget.id !== group.anchor.id) {
+                    const anchor = next.find(
+                      (entry) => entry.i === group.anchor.id,
+                    );
+                    return anchor
+                      ? {
+                          ...widget,
+                          layout: {
+                            x: anchor.x,
+                            y: anchor.y,
+                            w: anchor.w,
+                            h: anchor.h,
+                          },
+                        }
+                      : widget;
+                  }
+                  if (!item) {
+                    return widget;
+                  }
+                  const landed = groups.find(
+                    (candidate) =>
+                      candidate.anchor.id !== widget.id &&
+                      droppedOn(item, candidate.anchor.layout),
+                  );
+                  const target = landed ? landed.anchor.layout : item;
+                  return {
+                    ...widget,
+                    layout: {
+                      x: target.x,
+                      y: target.y,
+                      w: target.w,
+                      h: target.h,
+                    },
+                  };
                 });
                 if (
                   widgets.some(
@@ -1267,12 +1403,16 @@ function DashboardView({
                 const stacked = group.members.length > 1;
                 return (
                   <div key={group.anchor.id}>
-                    <div className="flex h-full flex-col rounded-xl border border-zinc-200 bg-white p-3 shadow-sm">
+                    <div
+                      className="flex h-full flex-col rounded-xl border p-3"
+                      style={panelStyle(theme)}
+                    >
                       {stacked ? (
                         <WidgetTabs
                           members={group.members}
                           datasets={datasets}
                           filters={dashboard.filters}
+                          theme={theme}
                           onDetach={(widget) => {
                             const taken = dashboard.widgets.filter(
                               (item) => item.id !== widget.id,
@@ -1321,6 +1461,7 @@ function DashboardView({
                               widget={group.anchor}
                               datasets={datasets}
                               filters={dashboard.filters}
+                              theme={theme}
                             />
                           </div>
                         </>
@@ -1341,14 +1482,20 @@ function WidgetBody({
   widget,
   datasets,
   filters,
+  theme,
 }: {
   widget: Widget;
   datasets: Dataset[];
   filters: Filter[];
+  theme: BoardTheme;
 }) {
   const dataset = datasets.find((item) => item.id === widget.datasetId);
   if (!dataset) {
-    return <p className="text-sm text-zinc-500">数据集已被删除。</p>;
+    return (
+      <p className="text-sm" style={{ color: theme.textMuted }}>
+        数据集已被删除。
+      </p>
+    );
   }
   return (
     <WidgetChart
@@ -1358,6 +1505,7 @@ function WidgetBody({
         .map((id) => datasets.find((item) => item.id === id))
         .filter((item): item is Dataset => Boolean(item))}
       filters={filters}
+      theme={theme}
     />
   );
 }
@@ -1366,11 +1514,13 @@ function WidgetTabs({
   members,
   datasets,
   filters,
+  theme,
   onDetach,
 }: {
   members: Widget[];
   datasets: Dataset[];
   filters: Filter[];
+  theme: BoardTheme;
   onDetach: (widget: Widget) => void;
 }) {
   const [active, setActive] = useState(members[0]?.id ?? '');
@@ -1379,21 +1529,24 @@ function WidgetTabs({
     <>
       <div className="mb-2 flex items-center gap-1">
         <div className="widget-drag flex min-w-0 flex-1 cursor-move gap-1 overflow-auto">
-          {members.map((member) => (
-            <button
-              key={member.id}
-              type="button"
-              className={`shrink-0 rounded-md px-2.5 py-1 text-xs ${
-                member.id === current?.id
-                  ? 'bg-zinc-900 text-white'
-                  : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200'
-              }`}
-              onMouseDown={(event) => event.stopPropagation()}
-              onClick={() => setActive(member.id)}
-            >
-              {member.title}
-            </button>
-          ))}
+          {members.map((member) => {
+            const selected = member.id === current?.id;
+            return (
+              <button
+                key={member.id}
+                type="button"
+                className="shrink-0 rounded-md px-2.5 py-1 text-xs"
+                style={{
+                  background: selected ? theme.accent : theme.panelAlt,
+                  color: selected ? theme.accentText : theme.textMuted,
+                }}
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={() => setActive(member.id)}
+              >
+                {member.title}
+              </button>
+            );
+          })}
         </div>
         {current ? (
           <Button
@@ -1410,7 +1563,12 @@ function WidgetTabs({
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
         {current ? (
-          <WidgetBody widget={current} datasets={datasets} filters={filters} />
+          <WidgetBody
+            widget={current}
+            datasets={datasets}
+            filters={filters}
+            theme={theme}
+          />
         ) : null}
       </div>
     </>
@@ -1422,11 +1580,13 @@ function WidgetChart({
   chartType,
   sources,
   filters,
+  theme,
 }: {
   dataset: Dataset;
   chartType: ChartType;
   sources: Dataset[];
   filters: Filter[];
+  theme: BoardTheme;
 }) {
   const sessionId = useKingdeeStore((state) => state.sessionId);
   const { toast } = useToast();
@@ -1492,19 +1652,31 @@ function WidgetChart({
 
   if (!sessionId) {
     return (
-      <p className="text-sm text-zinc-500">
+      <p className="text-sm" style={{ color: theme.textMuted }}>
         请先点击右上角「连接金蝶」完成登录。
       </p>
     );
   }
   if (loading && !result) {
-    return <p className="text-sm text-zinc-500">查询中...</p>;
+    return (
+      <p className="text-sm" style={{ color: theme.textMuted }}>
+        查询中...
+      </p>
+    );
   }
   if (failed && !result) {
-    return <p className="text-sm text-zinc-500">查询失败。</p>;
+    return (
+      <p className="text-sm" style={{ color: theme.textMuted }}>
+        查询失败。
+      </p>
+    );
   }
   if (!result || (result.rows.length === 0 && result.detail.length === 0)) {
-    return <p className="text-sm text-zinc-500">没有可绘制的数据。</p>;
+    return (
+      <p className="text-sm" style={{ color: theme.textMuted }}>
+        没有可绘制的数据。
+      </p>
+    );
   }
   return (
     <ChartView
@@ -1512,6 +1684,8 @@ function WidgetChart({
       chartType={chartType}
       result={result}
       headers={headers}
+      palette={boardPalette(theme)}
+      dark={theme.dark}
     />
   );
 }

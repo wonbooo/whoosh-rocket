@@ -4,7 +4,7 @@ import { Header } from '@/components/shared/Header';
 
 export function AppLayout() {
   return (
-    <div className="flex min-h-screen flex-col bg-zinc-50">
+    <div className="flex min-h-screen flex-col bg-zinc-50 [.dark_&]:bg-zinc-950">
       <Header />
       <main className="flex-1">
         <Suspense

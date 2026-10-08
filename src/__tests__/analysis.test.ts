@@ -11,7 +11,9 @@ import { chartData, chartSpec } from '@/features/analysis/chartSpec';
 import { parseCatalog } from '@/features/analysis/catalog';
 import { queryChart, queryMerged } from '@/features/analysis/merge';
 import {
+  loadAnalysisSettings,
   loadAnalysisState,
+  saveAnalysisSettings,
   saveAnalysisState,
 } from '@/features/analysis/storage';
 import {
@@ -26,6 +28,8 @@ import {
   instantiateTemplate,
 } from '@/features/analysis/templates';
 import { groupOverlaps } from '@/features/analysis/overlap';
+import { findTheme } from '@/features/analysis/themes';
+import { useAnalysisStore } from '@/features/analysis/store';
 import type { Widget } from '@/features/analysis/types';
 
 function dataset(overrides: Partial<Dataset> = {}): Dataset {
@@ -609,6 +613,16 @@ describe('analysis storage', () => {
     record.set('dashboards', '"a string"');
     expect(loadAnalysisState(record)).toEqual({ datasets: [], dashboards: [] });
   });
+
+  it('remembers the chosen theme and falls back when it is unknown', () => {
+    const record = memoryRecord();
+    expect(loadAnalysisSettings(record).themeId).toBe('default');
+    saveAnalysisSettings({ themeId: 'dark' }, record);
+    expect(loadAnalysisSettings(record).themeId).toBe('dark');
+    record.set('theme', 'no-such-theme');
+    expect(loadAnalysisSettings(record).themeId).toBe('default');
+    expect(findTheme('no-such-theme').id).toBe('default');
+  });
 });
 
 describe('form options', () => {
@@ -662,7 +676,12 @@ describe('chart spec', () => {
       type: 'interval',
       transform: [{ type: 'dodgeX' }],
       encode: { x: 'dimension', y: 'value', color: 'series' },
-      slider: { x: {} },
+      slider: {
+        x: {
+          labelFormatter: expect.any(Function),
+          style: { showLabel: false, showLabelOnInteraction: true },
+        },
+      },
     });
   });
 
@@ -672,7 +691,7 @@ describe('chart spec', () => {
     ).toMatchObject({
       type: 'line',
       transform: [],
-      encode: { color: undefined },
+      encode: { color: 'dimension' },
     });
   });
 
@@ -818,15 +837,54 @@ describe('board templates', () => {
     expect(ids.size).toBe(
       board.datasets.length + board.dashboard.widgets.length + 1,
     );
+
+    const positions = board.dashboard.widgets.map(
+      (item) => `${item.layout.x},${item.layout.y}`,
+    );
+    expect(new Set(positions).size).toBe(positions.length);
+    const placed = board.dashboard.widgets.map((item) => item.layout);
+    for (const item of placed) {
+      const covered = placed.filter(
+        (other) =>
+          item.x < other.x + other.w &&
+          other.x < item.x + item.w &&
+          item.y < other.y + other.h &&
+          other.y < item.y + item.h,
+      );
+      expect(covered).toHaveLength(1);
+    }
   });
 
-  it('produces a fresh copy on every instantiation', () => {
+  it('reuses the same datasets and makes a new board each time', () => {
     const first = instantiateTemplate(template!);
     const second = instantiateTemplate(template!);
-    expect(first.dashboard.id).not.toBe(second.dashboard.id);
-    expect(first.datasets.map((item) => item.id)).not.toEqual(
+    expect(first.datasets.map((item) => item.id)).toEqual(
       second.datasets.map((item) => item.id),
     );
+    expect(
+      first.datasets.every((item) => item.origin?.templateId === template!.id),
+    ).toBe(true);
+    expect(first.dashboard.id).not.toBe(second.dashboard.id);
+    expect(first.dashboard.widgets.map((item) => item.id)).not.toEqual(
+      second.dashboard.widgets.map((item) => item.id),
+    );
+
+    useAnalysisStore.setState({
+      datasets: [],
+      dashboards: [],
+      themeId: 'default',
+    });
+    useAnalysisStore.getState().applyTemplate(first);
+    useAnalysisStore.getState().applyTemplate(second);
+    const state = useAnalysisStore.getState();
+    expect(state.datasets).toHaveLength(first.datasets.length);
+    expect(state.dashboards).toHaveLength(2);
+    const shared = new Set(state.datasets.map((item) => item.id));
+    for (const board of state.dashboards) {
+      for (const widget of board.widgets) {
+        expect(shared.has(widget.datasetId)).toBe(true);
+      }
+    }
   });
 });
 
@@ -863,7 +921,7 @@ describe('overlapping widgets', () => {
     expect(groups.every((group) => group.members.length === 1)).toBe(true);
   });
 
-  it('ignores a slight overlap and merges only when most of the card covers', () => {
+  it('merges only when one card is dropped onto the other', () => {
     const grazing = groupOverlaps([
       widget('甲', 0, 0, 6, 8),
       widget('乙', 5, 0, 6, 8),
@@ -872,9 +930,15 @@ describe('overlapping widgets', () => {
 
     const covered = groupOverlaps([
       widget('甲', 0, 0, 6, 8),
-      widget('乙', 2, 0, 6, 8),
+      widget('乙', 2, 2, 6, 8),
     ]);
     expect(covered).toHaveLength(1);
+
+    const beside = groupOverlaps([
+      widget('甲', 0, 0, 6, 8),
+      widget('乙', 5, 0, 6, 8),
+    ]);
+    expect(beside).toHaveLength(2);
   });
 
   it('chains overlap through a third widget', () => {

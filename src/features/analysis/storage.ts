@@ -7,10 +7,12 @@ import {
   normalizeDashboard,
   normalizeDataset,
 } from '@/features/analysis/normalize';
+import { DEFAULT_THEME_ID, findTheme } from '@/features/analysis/themes';
 import { createRecord, type PersistedRecord } from '@/lib/persistedRecord';
 
 const DATASETS = 'datasets';
 const DASHBOARDS = 'dashboards';
+const THEME = 'theme';
 
 export function emptyAnalysisState(): AnalysisState {
   return { datasets: [], dashboards: [] };
@@ -36,6 +38,23 @@ export function loadAnalysisState(
     datasets: readList<Dataset>(record, DATASETS).map(normalizeDataset),
     dashboards: readList<Dashboard>(record, DASHBOARDS).map(normalizeDashboard),
   };
+}
+
+export interface AnalysisSettings {
+  themeId: string;
+}
+
+export function loadAnalysisSettings(
+  record: PersistedRecord = createRecord('analysis'),
+): AnalysisSettings {
+  return { themeId: findTheme(record.get(THEME) ?? DEFAULT_THEME_ID).id };
+}
+
+export function saveAnalysisSettings(
+  settings: AnalysisSettings,
+  record: PersistedRecord = createRecord('analysis'),
+): void {
+  record.set(THEME, settings.themeId);
 }
 
 export function saveAnalysisState(

@@ -78,9 +78,9 @@ function ref([field, display]: FieldSpec): FieldRef {
   return { field, display };
 }
 
-function dataset(spec: DatasetSpec): Dataset {
+function dataset(spec: DatasetSpec, templateId: string): Dataset {
   return {
-    id: crypto.randomUUID(),
+    id: `template:${templateId}:${spec.name}`,
     name: spec.name,
     formId: spec.formId,
     dimension: ref(spec.dimension),
@@ -93,6 +93,7 @@ function dataset(spec: DatasetSpec): Dataset {
     filters: spec.filters,
     limit: spec.limit,
     chartType: spec.chartType,
+    origin: { templateId },
   };
 }
 
@@ -322,7 +323,11 @@ export const BOARD_TEMPLATES: BoardTemplate[] = [
     name: '采购入库看板',
     description:
       '今日应入库、逾期、收料待入库、本月采购的指标卡和明细，加上采购金额、逾期统计和供应商排名',
-    build: () => ({ datasets: purchaseInbound.map(dataset) }),
+    build: () => ({
+      datasets: purchaseInbound.map((spec) =>
+        dataset(spec, 'purchase-inbound'),
+      ),
+    }),
   },
 ];
 
@@ -349,24 +354,29 @@ export function instantiateTemplate(
   const byName = new Map(datasets.map((item) => [item.name, item.id]));
   const spans = templateSpans(template.id);
   const heights = templateHeights(template.id);
-  const widgets: Widget[] = datasets.map((item, index) => ({
-    id: crypto.randomUUID(),
-    title: item.name,
-    datasetId: item.id,
-    chartType: item.chartType,
-    sources:
-      item.name === '采购金额·订单'
-        ? AMOUNT_SOURCES.map((name) => byName.get(name)).filter(
-            (id): id is string => id != null,
-          )
-        : [],
-    layout: {
-      x: (index % 2) * 6,
-      y: Infinity,
-      w: spans[index] ?? 6,
-      h: heights[index] ?? 8,
-    },
-  }));
+  let cursor = 0;
+  let rowHeight = 0;
+  const widgets: Widget[] = datasets.map((item, index) => {
+    const width = spans[index] ?? 6;
+    const height = heights[index] ?? 8;
+    const x = width >= 12 || cursor + width > 12 ? 0 : cursor;
+    const y = x === 0 ? rowHeight : rowHeight - height;
+    cursor = x + width;
+    rowHeight = x === 0 ? rowHeight + height : Math.max(rowHeight, y + height);
+    return {
+      id: crypto.randomUUID(),
+      title: item.name,
+      datasetId: item.id,
+      chartType: item.chartType,
+      sources:
+        item.name === '采购金额·订单'
+          ? AMOUNT_SOURCES.map((name) => byName.get(name)).filter(
+              (id): id is string => id != null,
+            )
+          : [],
+      layout: { x, y, w: width, h: height },
+    };
+  });
   return {
     datasets,
     dashboard: {
