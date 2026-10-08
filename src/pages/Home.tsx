@@ -77,7 +77,7 @@ export default function Home() {
               type="button"
               onClick={() => handleSelect(item)}
               className={cn(
-                'rounded-xl border border-zinc-200 bg-white p-5 text-left shadow-sm transition-shadow hover:shadow-md',
+                'rounded-xl border border-zinc-200 bg-white p-5 text-left shadow-sm transition-shadow hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:bg-zinc-800',
               )}
             >
               <div
@@ -89,7 +89,7 @@ export default function Home() {
                 <Icon className="h-5 w-5" />
               </div>
               <div className="text-base font-semibold">{item.title}</div>
-              <p className="mt-1 text-sm text-zinc-500">
+              <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
                 在系统中新增
                 <span className="text-blue-600">{item.formLabel}</span>
               </p>
@@ -106,13 +106,15 @@ export default function Home() {
       <div className="grid gap-4 md:grid-cols-3">
         <Link
           to="/analysis"
-          className="rounded-xl border border-zinc-200 bg-white p-5 text-left shadow-sm transition-shadow hover:shadow-md"
+          className="rounded-xl border border-zinc-200 bg-white p-5 text-left shadow-sm transition-shadow hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:bg-zinc-800"
         >
           <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-violet-50 text-violet-600">
             <LineChart className="h-5 w-5" />
           </div>
           <div className="text-base font-semibold">数据分析</div>
-          <p className="mt-1 text-sm text-zinc-500">按维度汇总金蝶单据并绘图</p>
+          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+            按维度汇总金蝶单据并绘图
+          </p>
         </Link>
       </div>
       <AftersaleOrderDialog

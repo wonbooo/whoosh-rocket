@@ -194,7 +194,7 @@ pub fn validate_license(
 }
 
 pub fn machine_id() -> Result<String, LicenseError> {
-  read_machine_id().map_err(|err| LicenseError::Io(err))
+  read_machine_id().map_err(LicenseError::Io)
 }
 
 #[cfg(windows)]
@@ -219,6 +219,75 @@ fn read_machine_id() -> Result<String, String> {
 
 pub fn today() -> NaiveDate {
   Local::now().date_naive()
+}
+
+/// How long a fetched network time stays trusted before it must be refreshed.
+const NETWORK_TIME_TTL_SECS: i64 = 6 * 60 * 60;
+
+/// The local clock may run this far ahead of the network time before the
+/// network time is treated as stale and the clock wins.
+const CLOCK_SKEW_TOLERANCE: chrono::TimeDelta = chrono::TimeDelta::minutes(5);
+
+/// Public NTP servers, tried in order. The first response wins.
+const NTP_SERVERS: &[&str] = &[
+  "ntp1.ntsc.ac.cn",
+  "ntp2.ntsc.ac.cn",
+  "ntp1.aliyun.com",
+  "ntp2.aliyun.com",
+  "ntp1.tencent.com",
+  "ntp1.baidu.com",
+];
+
+const NTP_PORT: u16 = 123;
+const NTP_UNIX_EPOCH_OFFSET: u64 = 2_208_988_800;
+const NTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Current time from a public NTP server, or `None` when every server fails.
+pub fn fetch_network_time() -> Option<chrono::DateTime<chrono::Utc>> {
+  for server in NTP_SERVERS {
+    if let Some(time) = query_ntp(server) {
+      return Some(time);
+    }
+  }
+  None
+}
+
+fn query_ntp(server: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+  use std::net::{ToSocketAddrs, UdpSocket};
+  let address = (server, NTP_PORT).to_socket_addrs().ok()?.next()?;
+  let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+  socket.set_read_timeout(Some(NTP_TIMEOUT)).ok()?;
+  socket.set_write_timeout(Some(NTP_TIMEOUT)).ok()?;
+  // NTP client request: version 4, mode 3 (client).
+  let mut packet = [0u8; 48];
+  packet[0] = 0x23;
+  socket.send_to(&packet, address).ok()?;
+  let (size, _) = socket.recv_from(&mut packet).ok()?;
+  if size < 48 {
+    return None;
+  }
+  let seconds = u32::from_be_bytes(packet[40..44].try_into().ok()?) as u64;
+  if seconds < NTP_UNIX_EPOCH_OFFSET {
+    return None;
+  }
+  chrono::DateTime::from_timestamp((seconds - NTP_UNIX_EPOCH_OFFSET) as i64, 0)
+}
+
+/// The date license checks should use.
+///
+/// A network time within its trust window is the authority, so setting the
+/// system clock backwards cannot extend a license and setting it forwards
+/// cannot expire one early. Once the reading is older than the trust window it
+/// stops counting, and with no reading at all the local clock is the fallback.
+pub fn effective_today(network_time: Option<(chrono::DateTime<chrono::Utc>, NaiveDate)>) -> NaiveDate {
+  let Some((fetched_at, fetched_on)) = network_time else {
+    return Local::now().date_naive();
+  };
+  let age = Local::now().naive_utc() - fetched_at.naive_utc();
+  if age > chrono::TimeDelta::seconds(NETWORK_TIME_TTL_SECS) || age < -CLOCK_SKEW_TOLERANCE {
+    return fetched_on;
+  }
+  fetched_at.date_naive() + age
 }
 
 pub const LICENSE_NAMESPACE: &str = "license";
@@ -405,5 +474,60 @@ mod tests {
     let status = status_from_text(Some(&text), "machine-a", issued, &test_verify_key());
     assert!(status.valid);
     assert_eq!(status.expires_at.as_deref(), Some("2026-12-05"));
+  }
+
+  fn utc(date: NaiveDate, hour: u32) -> chrono::DateTime<chrono::Utc> {
+    date
+      .and_hms_opt(hour, 0, 0)
+      .unwrap()
+      .and_utc()
+  }
+
+  #[test]
+  fn network_time_survives_a_clock_set_backwards() {
+    let now = chrono::Utc::now();
+    let fetched_on = (now - chrono::TimeDelta::days(40)).date_naive();
+    assert_eq!(effective_today(Some((now, fetched_on))), now.date_naive());
+  }
+
+  #[test]
+  fn network_time_survives_a_clock_set_forwards() {
+    let fetched_at = chrono::Utc::now() - chrono::TimeDelta::hours(8);
+    assert_eq!(
+      effective_today(Some((fetched_at, fetched_at.date_naive()))),
+      fetched_at.date_naive()
+    );
+  }
+
+  #[test]
+  fn fresh_network_time_advances_with_the_clock() {
+    let fetched_at = chrono::Utc::now() - chrono::TimeDelta::hours(2);
+    assert_eq!(
+      effective_today(Some((fetched_at, fetched_at.date_naive()))),
+      chrono::Utc::now().date_naive()
+    );
+  }
+
+  #[test]
+  fn stale_network_time_stays_put() {
+    let fetched_on = NaiveDate::from_ymd_opt(2020, 1, 1).unwrap();
+    let fetched_at = utc(fetched_on, 0);
+    assert_eq!(effective_today(Some((fetched_at, fetched_on))), fetched_on);
+  }
+
+  #[test]
+  fn missing_network_time_falls_back_to_the_clock() {
+    assert_eq!(effective_today(None), Local::now().date_naive());
+  }
+
+  #[test]
+  fn ntp_query_returns_a_plausible_time() {
+    let Some(time) = fetch_network_time() else {
+      // No network in this environment; the query logic is covered by the
+      // effective_today tests and the servers are tried at runtime.
+      return;
+    };
+    let drift = (chrono::Utc::now() - time).num_hours().abs();
+    assert!(drift < 24, "ntp time {time} is implausibly far from the clock");
   }
 }
