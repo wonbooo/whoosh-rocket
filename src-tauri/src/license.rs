@@ -23,6 +23,8 @@ pub enum LicenseError {
   Invalid,
   BadPassword,
   EmptyMachineId,
+  Offline,
+  Locked,
   Io(String),
 }
 
@@ -35,6 +37,8 @@ impl LicenseError {
       Self::Invalid => "授权文件无效",
       Self::BadPassword => "签发口令不正确",
       Self::EmptyMachineId => "请填写机器码",
+      Self::Offline => "无法获取网络时间，请检查网络后重试",
+      Self::Locked => "今日授权尝试次数已用完，请明天再试",
       Self::Io(_) => "授权文件读写失败",
     }
   }
@@ -290,6 +294,24 @@ pub fn effective_today(network_time: Option<(chrono::DateTime<chrono::Utc>, Naiv
   fetched_at.date_naive() + age
 }
 
+/// Failed imports allowed before the machine is locked for the rest of the day.
+pub const IMPORT_ATTEMPT_LIMIT: u32 = 10;
+
+pub fn attempts_for_today(stored: Option<&str>, today: NaiveDate) -> u32 {
+  let Some((date, count)) = stored.and_then(|value| value.split_once(' ')) else {
+    return 0;
+  };
+  if date != today.format("%Y-%m-%d").to_string() {
+    return 0;
+  }
+  count.parse().unwrap_or(0)
+}
+
+pub fn record_attempt(stored: Option<&str>, today: NaiveDate) -> (u32, String) {
+  let next = attempts_for_today(stored, today) + 1;
+  (next, format!("{} {next}", today.format("%Y-%m-%d")))
+}
+
 pub const LICENSE_NAMESPACE: &str = "license";
 pub const LICENSE_KEY: &str = "document";
 
@@ -518,6 +540,20 @@ mod tests {
   #[test]
   fn missing_network_time_falls_back_to_the_clock() {
     assert_eq!(effective_today(None), Local::now().date_naive());
+  }
+
+  #[test]
+  fn attempts_reset_on_a_new_day_and_lock_after_the_limit() {
+    let today = NaiveDate::from_ymd_opt(2026, 10, 8).unwrap();
+    assert_eq!(attempts_for_today(None, today), 0);
+    assert_eq!(attempts_for_today(Some("2026-10-07 10"), today), 0);
+    let mut stored = None;
+    for _ in 0..IMPORT_ATTEMPT_LIMIT {
+      let (count, next) = record_attempt(stored.as_deref(), today);
+      stored = Some(next);
+      assert!(count <= IMPORT_ATTEMPT_LIMIT);
+    }
+    assert_eq!(attempts_for_today(stored.as_deref(), today), IMPORT_ATTEMPT_LIMIT);
   }
 
   #[test]

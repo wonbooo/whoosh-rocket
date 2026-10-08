@@ -86,35 +86,31 @@ fn app_license_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String
 fn require_license(app: &tauri::AppHandle) -> Result<(), String> {
   let machine_id = license::machine_id().map_err(|err| err.to_string())?;
   let text = current_license(app)?.ok_or_else(|| license::LicenseError::Missing.to_string())?;
-  license::validate_license(&text, &machine_id, trusted_today(app))
+  license::validate_license(&text, &machine_id, trusted_today(app)?)
     .map(|_| ())
     .map_err(|err| err.to_string())
 }
 
-/// The date license checks use: a recently fetched NTP time when one is
-/// available, otherwise the local clock. A fresh network time is cached so
-/// later checks work offline; one past its trust window is refreshed.
-fn trusted_today(app: &tauri::AppHandle) -> NaiveDate {
+/// The date license checks use, taken from NTP. A reading stays trusted for six
+/// hours so brief outages still work; past that it is refreshed. With no
+/// reading at all the check fails rather than trusting the system clock.
+fn trusted_today(app: &tauri::AppHandle) -> Result<NaiveDate, String> {
   let cached = cached_network_time(app);
   if cached.is_some_and(|(fetched_at, _)| network_time_is_fresh(fetched_at)) {
-    return license::effective_today(cached);
+    return Ok(license::effective_today(cached));
   }
   if let Some(fetched_at) = license::fetch_network_time() {
     let fetched_on = fetched_at.date_naive();
     store_network_time(app, fetched_at, fetched_on);
-    return license::effective_today(Some((fetched_at, fetched_on)));
+    return Ok(license::effective_today(Some((fetched_at, fetched_on))));
   }
-  // A reading that aged out still anchors the date. Falling back to the clock
-  // here would let a changed system time win the moment the network is unreachable.
-  if cached.is_some() {
-    return license::effective_today(cached);
-  }
-  license::today()
+  Err(license::LicenseError::Offline.to_string())
 }
 
 const TIME_NAMESPACE: &str = "license";
 const TIME_FETCHED_AT: &str = "networkTimeAt";
 const TIME_FETCHED_ON: &str = "networkTimeDate";
+const IMPORT_ATTEMPTS_KEY: &str = "importAttempts";
 
 /// A cached network time is reusable while the local clock says it was fetched
 /// within the last six hours and not in the future.
@@ -175,7 +171,7 @@ fn get_license_status(app: tauri::AppHandle) -> Result<license::LicenseStatus, S
   Ok(license::status_from_text(
     text.as_deref(),
     &machine_id,
-    trusted_today(&app),
+    trusted_today(&app)?,
     &key,
   ))
 }
@@ -183,9 +179,21 @@ fn get_license_status(app: tauri::AppHandle) -> Result<license::LicenseStatus, S
 #[tauri::command]
 fn import_license(app: tauri::AppHandle, content: String) -> Result<license::LicenseStatus, String> {
   let machine_id = license::machine_id().map_err(|err| err.to_string())?;
-  let today = trusted_today(&app);
-  license::validate_license(&content, &machine_id, today)
-    .map_err(|err| err.to_string())?;
+  let today = trusted_today(&app)?;
+  let attempts = import_attempts(&app)?;
+  if license::attempts_for_today(attempts.as_deref(), today) >= license::IMPORT_ATTEMPT_LIMIT {
+    return Err(license::LicenseError::Locked.to_string());
+  }
+  if let Err(err) = license::validate_license(&content, &machine_id, today) {
+    let (_, stored) = license::record_attempt(attempts.as_deref(), today);
+    let _ = with_db(&app, |store| {
+      store.put(license::LICENSE_NAMESPACE, IMPORT_ATTEMPTS_KEY, &stored)
+    });
+    return Err(err.to_string());
+  }
+  let _ = with_db(&app, |store| {
+    store.delete(license::LICENSE_NAMESPACE, IMPORT_ATTEMPTS_KEY)
+  });
   let text = content.trim().to_string();
   with_db(&app, |store| {
     store.put(license::LICENSE_NAMESPACE, license::LICENSE_KEY, &text)
@@ -197,6 +205,12 @@ fn import_license(app: tauri::AppHandle, content: String) -> Result<license::Lic
     today,
     &key,
   ))
+}
+
+fn import_attempts(app: &tauri::AppHandle) -> Result<Option<String>, String> {
+  with_db(app, |store| {
+    store.get(license::LICENSE_NAMESPACE, IMPORT_ATTEMPTS_KEY)
+  })
 }
 
 #[tauri::command]
