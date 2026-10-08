@@ -83,7 +83,7 @@ export function ChartView({
   return (
     <div className="flex h-full flex-col">
       {dataset.columns.length > 0 ? (
-        <div className="h-full max-h-72 overflow-auto">
+        <div className="min-h-0 flex-1 overflow-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500">

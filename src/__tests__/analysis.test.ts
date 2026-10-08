@@ -25,6 +25,8 @@ import {
   BOARD_TEMPLATES,
   instantiateTemplate,
 } from '@/features/analysis/templates';
+import { groupOverlaps } from '@/features/analysis/overlap';
+import type { Widget } from '@/features/analysis/types';
 
 function dataset(overrides: Partial<Dataset> = {}): Dataset {
   return {
@@ -825,5 +827,63 @@ describe('board templates', () => {
     expect(first.datasets.map((item) => item.id)).not.toEqual(
       second.datasets.map((item) => item.id),
     );
+  });
+});
+
+function widget(id: string, x: number, y: number, w = 6, h = 8): Widget {
+  return {
+    id,
+    title: id,
+    datasetId: 'ds',
+    chartType: 'bar',
+    sources: [],
+    layout: { x, y, w, h },
+  };
+}
+
+describe('overlapping widgets', () => {
+  it('merges widgets that cover each other into one group', () => {
+    const groups = groupOverlaps([
+      widget('甲', 0, 0, 6, 8),
+      widget('乙', 1, 1, 6, 8),
+      widget('丙', 6, 10),
+    ]);
+    expect(groups).toHaveLength(2);
+    const stacked = groups.find((group) => group.members.length > 1);
+    expect(stacked?.anchor.id).toBe('甲');
+    expect(stacked?.members.map((member) => member.id).sort()).toEqual([
+      '乙',
+      '甲',
+    ]);
+  });
+
+  it('keeps widgets apart when they only share an edge', () => {
+    const groups = groupOverlaps([widget('甲', 0, 0), widget('乙', 6, 0)]);
+    expect(groups).toHaveLength(2);
+    expect(groups.every((group) => group.members.length === 1)).toBe(true);
+  });
+
+  it('ignores a slight overlap and merges only when most of the card covers', () => {
+    const grazing = groupOverlaps([
+      widget('甲', 0, 0, 6, 8),
+      widget('乙', 5, 0, 6, 8),
+    ]);
+    expect(grazing).toHaveLength(2);
+
+    const covered = groupOverlaps([
+      widget('甲', 0, 0, 6, 8),
+      widget('乙', 2, 0, 6, 8),
+    ]);
+    expect(covered).toHaveLength(1);
+  });
+
+  it('chains overlap through a third widget', () => {
+    const groups = groupOverlaps([
+      widget('甲', 0, 0, 6, 6),
+      widget('乙', 4, 4, 6, 6),
+      widget('丙', 2, 2, 6, 6),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.members).toHaveLength(3);
   });
 });
