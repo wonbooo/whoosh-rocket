@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import GridLayout, { useContainerWidth } from 'react-grid-layout';
+import GridLayout, { getCompactor, useContainerWidth } from 'react-grid-layout';
 import type { LayoutItem } from 'react-grid-layout';
 import { formatKingdeeError } from '@/apis/kingdee/client';
 import { Button } from '@/components/ui/button';
@@ -19,6 +19,7 @@ import {
   type QueryChartResult,
 } from '@/features/analysis/query';
 import { useAnalysisStore } from '@/features/analysis/store';
+import { groupOverlaps, overlaps } from '@/features/analysis/overlap';
 import {
   BOARD_TEMPLATES,
   instantiateTemplate,
@@ -1050,6 +1051,15 @@ function DashboardView({
     minH: widget.chartType === 'kpi' ? 2 : 6,
   }));
 
+  const groups = groupOverlaps(dashboard.widgets);
+  const groupedLayout: LayoutItem[] = groups.map((group) => {
+    const item = layout.find((entry) => entry.i === group.anchor.id);
+    return {
+      ...(item ?? { x: 0, y: 0, w: 6, h: 8, minW: 2, minH: 2 }),
+      i: group.anchor.id,
+    };
+  });
+
   const handleAddWidget = () => {
     if (!widgetDraft.datasetId) {
       toast({ title: '请先创建数据集' });
@@ -1222,8 +1232,9 @@ function DashboardView({
           {mounted ? (
             <GridLayout
               width={width}
-              layout={layout}
+              layout={groupedLayout}
               gridConfig={{ cols: 12, rowHeight: 32, margin: [16, 16] }}
+              compactor={getCompactor(null, true)}
               dragConfig={{
                 enabled: true,
                 bounded: false,
@@ -1252,42 +1263,68 @@ function DashboardView({
                 }
               }}
             >
-              {dashboard.widgets.map((widget) => {
-                const dataset = datasets.find(
-                  (item) => item.id === widget.datasetId,
-                );
+              {groups.map((group) => {
+                const stacked = group.members.length > 1;
                 return (
-                  <div key={widget.id}>
+                  <div key={group.anchor.id}>
                     <div className="flex h-full flex-col rounded-xl border border-zinc-200 bg-white p-3 shadow-sm">
-                      <div className="widget-drag mb-2 flex cursor-move items-center justify-between">
-                        <h3 className="text-sm font-medium">{widget.title}</h3>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => deleteWidget(dashboard.id, widget.id)}
-                        >
-                          移除
-                        </Button>
-                      </div>
-                      <div className="min-h-0 flex-1 overflow-auto">
-                        {dataset ? (
-                          <WidgetChart
-                            dataset={dataset}
-                            chartType={widget.chartType}
-                            sources={widget.sources
-                              .map((id) =>
-                                datasets.find((item) => item.id === id),
-                              )
-                              .filter((item): item is Dataset => Boolean(item))}
-                            filters={dashboard.filters}
-                          />
-                        ) : (
-                          <p className="text-sm text-zinc-500">
-                            数据集已被删除。
-                          </p>
-                        )}
-                      </div>
+                      {stacked ? (
+                        <WidgetTabs
+                          members={group.members}
+                          datasets={datasets}
+                          filters={dashboard.filters}
+                          onDetach={(widget) => {
+                            const taken = dashboard.widgets.filter(
+                              (item) => item.id !== widget.id,
+                            );
+                            let y = widget.layout.y + widget.layout.h;
+                            const collides = (row: number) =>
+                              taken.some((item) =>
+                                overlaps(
+                                  {
+                                    x: widget.layout.x,
+                                    y: row,
+                                    w: widget.layout.w,
+                                    h: widget.layout.h,
+                                  },
+                                  item.layout,
+                                ),
+                              );
+                            while (collides(y)) {
+                              y += 1;
+                            }
+                            saveWidget(dashboard.id, {
+                              ...widget,
+                              layout: { ...widget.layout, y },
+                            });
+                          }}
+                        />
+                      ) : (
+                        <>
+                          <div className="widget-drag mb-2 flex cursor-move items-center justify-between">
+                            <h3 className="text-sm font-medium">
+                              {group.anchor.title}
+                            </h3>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() =>
+                                deleteWidget(dashboard.id, group.anchor.id)
+                              }
+                            >
+                              移除
+                            </Button>
+                          </div>
+                          <div className="min-h-0 flex-1 overflow-auto">
+                            <WidgetBody
+                              widget={group.anchor}
+                              datasets={datasets}
+                              filters={dashboard.filters}
+                            />
+                          </div>
+                        </>
+                      )}
                     </div>
                   </div>
                 );
@@ -1297,6 +1334,86 @@ function DashboardView({
         </div>
       )}
     </div>
+  );
+}
+
+function WidgetBody({
+  widget,
+  datasets,
+  filters,
+}: {
+  widget: Widget;
+  datasets: Dataset[];
+  filters: Filter[];
+}) {
+  const dataset = datasets.find((item) => item.id === widget.datasetId);
+  if (!dataset) {
+    return <p className="text-sm text-zinc-500">数据集已被删除。</p>;
+  }
+  return (
+    <WidgetChart
+      dataset={dataset}
+      chartType={widget.chartType}
+      sources={widget.sources
+        .map((id) => datasets.find((item) => item.id === id))
+        .filter((item): item is Dataset => Boolean(item))}
+      filters={filters}
+    />
+  );
+}
+
+function WidgetTabs({
+  members,
+  datasets,
+  filters,
+  onDetach,
+}: {
+  members: Widget[];
+  datasets: Dataset[];
+  filters: Filter[];
+  onDetach: (widget: Widget) => void;
+}) {
+  const [active, setActive] = useState(members[0]?.id ?? '');
+  const current = members.find((member) => member.id === active) ?? members[0];
+  return (
+    <>
+      <div className="mb-2 flex items-center gap-1">
+        <div className="widget-drag flex min-w-0 flex-1 cursor-move gap-1 overflow-auto">
+          {members.map((member) => (
+            <button
+              key={member.id}
+              type="button"
+              className={`shrink-0 rounded-md px-2.5 py-1 text-xs ${
+                member.id === current?.id
+                  ? 'bg-zinc-900 text-white'
+                  : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200'
+              }`}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={() => setActive(member.id)}
+            >
+              {member.title}
+            </button>
+          ))}
+        </div>
+        {current ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            title="拆出来单独显示"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={() => onDetach(current)}
+          >
+            拆出
+          </Button>
+        ) : null}
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto">
+        {current ? (
+          <WidgetBody widget={current} datasets={datasets} filters={filters} />
+        ) : null}
+      </div>
+    </>
   );
 }
 
