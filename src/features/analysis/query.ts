@@ -1,26 +1,14 @@
 import { kingdeeApi } from '@/apis/kingdee/api';
 import { parseCatalog, type FieldCatalog } from '@/features/analysis/catalog';
 import {
-  aggregate,
-  compileFilters,
-  fieldKeys,
-} from '@/features/analysis/model';
+  queryChart,
+  queryMerged,
+  type QueryFn,
+} from '@/features/analysis/merge';
+import type { QueryChartResult } from '@/features/analysis/merge';
 import type { Dataset } from '@/features/analysis/types';
-import type { AggregateResult } from '@/features/analysis/model';
 
-export interface QueryChartResult extends AggregateResult {
-  fetched: number;
-  queryTruncated: boolean;
-}
-
-const QUERY_CAP = 2000;
-
-type QueryFn = (params: {
-  formId: string;
-  fieldKeys: string;
-  filterString: string;
-  topCount: number;
-}) => Promise<{ rows: unknown[]; truncated: boolean }>;
+export type { QueryChartResult };
 
 const defaultQuery: QueryFn = (params) =>
   kingdeeApi.queryBill<unknown>({
@@ -30,21 +18,18 @@ const defaultQuery: QueryFn = (params) =>
     topCount: params.topCount,
   });
 
-export async function queryChart(
+export async function runQuery(
   dataset: Dataset,
   query: QueryFn = defaultQuery,
 ): Promise<QueryChartResult> {
-  const page = await query({
-    formId: dataset.formId.trim(),
-    fieldKeys: fieldKeys(dataset),
-    filterString: compileFilters(dataset.filters),
-    topCount: QUERY_CAP,
-  });
-  return {
-    ...aggregate(page.rows, dataset),
-    fetched: page.rows.length,
-    queryTruncated: page.truncated,
-  };
+  return queryChart(dataset, query);
+}
+
+export async function runMerged(
+  sources: { dataset: Dataset; legend: string }[],
+  query: QueryFn = defaultQuery,
+): Promise<QueryChartResult> {
+  return queryMerged(sources, query);
 }
 
 type MetadataFn = (formId: string) => Promise<unknown>;

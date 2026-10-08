@@ -208,6 +208,7 @@ export function chartSpec(
   data: ChartDatum[],
   split: boolean,
   legend: string,
+  compact = false,
 ): G2Spec {
   const shape = SHAPES[chartType === 'kpi' ? 'bar' : chartType];
   const colorBy = shape.colorBy === 'series' && !split ? 'none' : shape.colorBy;
@@ -230,17 +231,24 @@ export function chartSpec(
     axis:
       shape.slider || chartType === 'cell' || chartType === 'heatmap'
         ? {
-            x: { title: false, labelFontSize: 12 },
-            y: { title: false, labelFontSize: 12 },
+            x: {
+              title: false,
+              labelFontSize: compact ? 10 : 12,
+              labelAutoRotate: false,
+              labelAutoHide: true,
+              labelAutoEllipsis: true,
+              size: compact ? 24 : 48,
+            },
+            y: { title: false, labelFontSize: compact ? 10 : 12 },
           }
         : false,
     legend:
-      colorBy === 'none'
+      colorBy === 'none' || compact
         ? false
         : {
             color: { position: 'bottom', layout: { justifyContent: 'center' } },
           },
-    slider: shape.slider ? { x: {} } : false,
+    slider: shape.slider && !compact ? { x: {} } : false,
     style:
       chartType === 'line' || chartType === 'radar'
         ? { lineWidth: 2 }

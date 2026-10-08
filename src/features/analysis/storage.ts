@@ -3,6 +3,10 @@ import type {
   Dashboard,
   Dataset,
 } from '@/features/analysis/types';
+import {
+  normalizeDashboard,
+  normalizeDataset,
+} from '@/features/analysis/normalize';
 import { createRecord, type PersistedRecord } from '@/lib/persistedRecord';
 
 const DATASETS = 'datasets';
@@ -29,8 +33,8 @@ export function loadAnalysisState(
   record: PersistedRecord = createRecord('analysis'),
 ): AnalysisState {
   return {
-    datasets: readList<Dataset>(record, DATASETS),
-    dashboards: readList<Dashboard>(record, DASHBOARDS),
+    datasets: readList<Dataset>(record, DATASETS).map(normalizeDataset),
+    dashboards: readList<Dashboard>(record, DASHBOARDS).map(normalizeDashboard),
   };
 }
 

@@ -21,6 +21,18 @@ export type ChartType =
 
 export type FilterOperator = 'eq' | 'neq' | 'contains' | 'gt' | 'lt';
 
+export type RelativeDate =
+  'today' | 'thisMonth' | 'last6Months' | 'last365Days';
+
+export type FilterValueMode = 'literal' | 'field' | 'relativeDate';
+
+export interface Filter {
+  field: string;
+  operator: FilterOperator;
+  value: string;
+  valueMode?: FilterValueMode;
+}
+
 export type FieldDisplay = 'value' | 'name' | 'number';
 
 export interface FieldRef {
@@ -28,10 +40,14 @@ export interface FieldRef {
   display: FieldDisplay;
 }
 
-export interface Filter {
+export type TimeGrain = 'month';
+
+export interface SeriesCase {
+  label: string;
   field: string;
   operator: FilterOperator;
   value: string;
+  valueMode?: FilterValueMode;
 }
 
 export interface Dataset {
@@ -39,11 +55,15 @@ export interface Dataset {
   name: string;
   formId: string;
   dimension: FieldRef;
+  grain: TimeGrain | null;
   series: FieldRef | null;
+  seriesCases: SeriesCase[];
   measure: FieldRef;
   aggregation: 'sum' | 'count';
+  columns: FieldRef[];
   filters: Filter[];
   limit: number;
+  chartType: ChartType;
 }
 
 export interface WidgetLayout {
@@ -58,12 +78,14 @@ export interface Widget {
   title: string;
   datasetId: string;
   chartType: ChartType;
+  sources: string[];
   layout: WidgetLayout;
 }
 
 export interface Dashboard {
   id: string;
   name: string;
+  filters: Filter[];
   widgets: Widget[];
 }
 
