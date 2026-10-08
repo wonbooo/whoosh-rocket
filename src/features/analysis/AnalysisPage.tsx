@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Maximize2, Minimize2 } from 'lucide-react';
 import GridLayout, { getCompactor, useContainerWidth } from 'react-grid-layout';
 import type { LayoutItem } from 'react-grid-layout';
 import { formatKingdeeError } from '@/apis/kingdee/client';
@@ -1092,6 +1093,7 @@ function DashboardView({
     chartType: (datasets[0]?.chartType ?? 'bar') as ChartType,
     extraIds: [] as string[],
   });
+  const [expanded, setExpanded] = useState<Widget | null>(null);
 
   const { width, containerRef, mounted } = useContainerWidth();
 
@@ -1413,6 +1415,7 @@ function DashboardView({
                           datasets={datasets}
                           filters={dashboard.filters}
                           theme={theme}
+                          onExpand={setExpanded}
                           onDetach={(widget) => {
                             const taken = dashboard.widgets.filter(
                               (item) => item.id !== widget.id,
@@ -1445,16 +1448,28 @@ function DashboardView({
                             <h3 className="text-sm font-medium">
                               {group.anchor.title}
                             </h3>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              onClick={() =>
-                                deleteWidget(dashboard.id, group.anchor.id)
-                              }
-                            >
-                              移除
-                            </Button>
+                            <div className="flex items-center">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                title="放大"
+                                onMouseDown={(event) => event.stopPropagation()}
+                                onClick={() => setExpanded(group.anchor)}
+                              >
+                                <Maximize2 className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() =>
+                                  deleteWidget(dashboard.id, group.anchor.id)
+                                }
+                              >
+                                移除
+                              </Button>
+                            </div>
                           </div>
                           <div className="min-h-0 flex-1 overflow-auto">
                             <WidgetBody
@@ -1471,6 +1486,15 @@ function DashboardView({
                 );
               })}
             </GridLayout>
+          ) : null}
+          {expanded ? (
+            <ExpandedWidget
+              widget={expanded}
+              datasets={datasets}
+              filters={dashboard.filters}
+              theme={theme}
+              onClose={() => setExpanded(null)}
+            />
           ) : null}
         </div>
       )}
@@ -1516,12 +1540,14 @@ function WidgetTabs({
   filters,
   theme,
   onDetach,
+  onExpand,
 }: {
   members: Widget[];
   datasets: Dataset[];
   filters: Filter[];
   theme: BoardTheme;
   onDetach: (widget: Widget) => void;
+  onExpand: (widget: Widget) => void;
 }) {
   const [active, setActive] = useState(members[0]?.id ?? '');
   const current = members.find((member) => member.id === active) ?? members[0];
@@ -1549,16 +1575,28 @@ function WidgetTabs({
           })}
         </div>
         {current ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            title="拆出来单独显示"
-            onMouseDown={(event) => event.stopPropagation()}
-            onClick={() => onDetach(current)}
-          >
-            拆出
-          </Button>
+          <>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              title="放大"
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={() => onExpand(current)}
+            >
+              <Maximize2 className="h-4 w-4" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              title="拆出来单独显示"
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={() => onDetach(current)}
+            >
+              拆出
+            </Button>
+          </>
         ) : null}
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
@@ -1572,6 +1610,62 @@ function WidgetTabs({
         ) : null}
       </div>
     </>
+  );
+}
+
+function ExpandedWidget({
+  widget,
+  datasets,
+  filters,
+  theme,
+  onClose,
+}: {
+  widget: Widget;
+  datasets: Dataset[];
+  filters: Filter[];
+  theme: BoardTheme;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-40 flex flex-col p-6"
+      style={{ background: theme.background, color: theme.text }}
+    >
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-base font-medium">{widget.title}</h2>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          title="缩小"
+          onClick={onClose}
+        >
+          <Minimize2 className="h-4 w-4" />
+          缩小
+        </Button>
+      </div>
+      <div
+        className="min-h-0 flex-1 overflow-auto rounded-xl border p-4"
+        style={panelStyle(theme)}
+      >
+        <WidgetBody
+          widget={widget}
+          datasets={datasets}
+          filters={filters}
+          theme={theme}
+        />
+      </div>
+    </div>
   );
 }
 
