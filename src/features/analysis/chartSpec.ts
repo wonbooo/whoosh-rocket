@@ -216,6 +216,17 @@ export interface ChartPalette {
   panelAlt?: string;
 }
 
+/** 同一张图稳定取一种配色，不同图表落到调色板的不同位置。 */
+export function chartFill(seed: string, colors: string[]): string {
+  const palette = colors.length > 0 ? colors : FALLBACK_COLORS;
+  let hash = 0;
+  const text = seed.trim() || 'chart';
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (Math.imul(hash, 31) + text.charCodeAt(index)) >>> 0;
+  }
+  return palette[hash % palette.length];
+}
+
 export function chartSpec(
   chartType: ChartType,
   data: ChartDatum[],
@@ -224,10 +235,11 @@ export function chartSpec(
   compact = false,
   palette?: ChartPalette,
   theme?: Theme,
+  colorSeed = '',
 ): G2Spec {
   const shape = SHAPES[chartType === 'kpi' ? 'bar' : chartType];
-  const colorBy =
-    shape.colorBy === 'series' && !split ? 'dimension' : shape.colorBy;
+  const singleColor = shape.colorBy === 'series' && !split;
+  const colorBy = singleColor ? 'none' : shape.colorBy;
   const grouped =
     shape.transform.some((item) => item.type === 'dodgeX') && split;
   const encode: Record<string, string | undefined> = {
@@ -238,6 +250,19 @@ export function chartSpec(
   const colors = palette?.colors ?? FALLBACK_COLORS;
   const labelColor = palette?.muted ?? '#71717a';
   const gridColor = palette?.grid ?? 'rgba(0, 0, 0, 0.08)';
+  const fill = chartFill(colorSeed, colors);
+  const markStyle: Record<string, unknown> = {};
+  if (chartType === 'line' || chartType === 'radar') {
+    markStyle.lineWidth = 2;
+  }
+  if (singleColor) {
+    markStyle.fill = fill;
+    markStyle.stroke = fill;
+    if (chartType === 'area' || chartType === 'area-stacked') {
+      markStyle.fillOpacity = 0.35;
+      markStyle.lineWidth = 2;
+    }
+  }
   return {
     type: shape.type,
     theme,
@@ -285,10 +310,7 @@ export function chartSpec(
             },
           }
         : false,
-    style:
-      chartType === 'line' || chartType === 'radar'
-        ? { lineWidth: 2 }
-        : undefined,
+    style: Object.keys(markStyle).length > 0 ? markStyle : undefined,
     labels: shape.labels
       ? [{ position: 'outside', text: (datum: ChartDatum) => datum.dimension }]
       : undefined,

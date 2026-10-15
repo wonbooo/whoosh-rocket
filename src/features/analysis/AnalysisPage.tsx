@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Maximize2, Minimize2 } from 'lucide-react';
 import GridLayout, { getCompactor, useContainerWidth } from 'react-grid-layout';
 import type { LayoutItem } from 'react-grid-layout';
@@ -10,15 +10,35 @@ import type { SuggestColors } from '@/components/shared/SuggestInput';
 import { SelectMenu } from '@/components/shared/SelectMenu';
 import { ChartView } from '@/features/analysis/ChartView';
 import type { ColumnHeader } from '@/features/analysis/ChartView';
-import type { FieldCatalog } from '@/features/analysis/catalog';
+import { controlKind, mergeCatalogs } from '@/features/analysis/catalog';
+import type { FieldCatalog, FieldKind } from '@/features/analysis/catalog';
+import { readCatalogCache } from '@/features/analysis/catalogCache';
 import { knownOptions } from '@/features/analysis/enums';
 import { FORM_OPTIONS, formLabel } from '@/features/analysis/forms';
-import { CHART_TYPES } from '@/features/analysis/chartSpec';
-import { RELATIVE_DATES, validateDataset } from '@/features/analysis/model';
 import {
-  loadCatalog,
+  RELATIVE_DATES,
+  defaultFieldDisplay,
+  resolveDataset,
+  validateDataset,
+} from '@/features/analysis/model';
+import {
+  compatibleChartTypes,
+  fieldLabels,
+  fieldNeeds,
+  measureNotNumericMessage,
+  orderedChartTypes,
+  presentDataset,
+  presentationOf,
+  SHAPE_HINTS,
+  chartShape,
+} from '@/features/analysis/presentation';
+import type { Presentation } from '@/features/analysis/presentation';
+import {
+  beginCatalogLoad,
   runMerged,
   runQuery,
+  searchLookup,
+  type LookupMatch,
   type QueryChartResult,
 } from '@/features/analysis/query';
 import { useAnalysisStore } from '@/features/analysis/store';
@@ -37,7 +57,6 @@ import type {
   ChartType,
   Dashboard,
   Dataset,
-  FieldDisplay,
   FieldRef,
   Filter,
   FilterOperator,
@@ -49,26 +68,147 @@ import type {
 import { useToast } from '@/hooks/use-toast';
 import { useKingdeeStore } from '@/store/useKingdeeStore';
 
-const FILTER_OPERATORS: { value: FilterOperator; label: string }[] = [
-  { value: 'eq', label: '等于' },
-  { value: 'neq', label: '不等于' },
-  { value: 'contains', label: '包含' },
-  { value: 'gt', label: '大于' },
-  { value: 'lt', label: '小于' },
-];
-
-const VALUE_MODES: { value: FilterValueMode; label: string }[] = [
-  { value: 'literal', label: '固定值' },
-  { value: 'field', label: '字段' },
-  { value: 'relativeDate', label: '相对日期' },
-];
-
 const RELATIVE_DATE_LABELS: Record<RelativeDate, string> = {
   today: '今天',
   thisMonth: '本月',
   last6Months: '最近 6 个月',
   last365Days: '最近 365 天',
 };
+
+const COMPARE_LABELS: Record<FilterOperator, string> = {
+  eq: '等于',
+  neq: '不等于',
+  contains: '包含',
+  gt: '大于',
+  lt: '小于',
+};
+
+interface ClauseValue {
+  field: string;
+  operator: FilterOperator;
+  value: string;
+  valueMode?: FilterValueMode;
+  valueLabel?: string;
+}
+
+function operatorsFor(kind: FieldKind): { value: string; label: string }[] {
+  if (kind === 'date') {
+    return [
+      { value: 'eq', label: COMPARE_LABELS.eq },
+      { value: 'neq', label: COMPARE_LABELS.neq },
+      { value: 'gt', label: COMPARE_LABELS.gt },
+      { value: 'lt', label: COMPARE_LABELS.lt },
+      ...RELATIVE_DATES.map((token) => ({
+        value: token,
+        label: RELATIVE_DATE_LABELS[token],
+      })),
+    ];
+  }
+  if (kind === 'lookup') {
+    return ['eq', 'neq', 'contains'].map((value) => ({
+      value,
+      label: COMPARE_LABELS[value as FilterOperator],
+    }));
+  }
+  if (kind === 'enum') {
+    return ['eq', 'neq'].map((value) => ({
+      value,
+      label: COMPARE_LABELS[value as FilterOperator],
+    }));
+  }
+  if (kind === 'number') {
+    return ['eq', 'neq', 'gt', 'lt'].map((value) => ({
+      value,
+      label: COMPARE_LABELS[value as FilterOperator],
+    }));
+  }
+  return ['eq', 'neq', 'contains'].map((value) => ({
+    value,
+    label: COMPARE_LABELS[value as FilterOperator],
+  }));
+}
+
+function isRelativeToken(value: string): value is RelativeDate {
+  return (RELATIVE_DATES as string[]).includes(value);
+}
+
+function displayedOperator(clause: ClauseValue): string {
+  if (
+    clause.valueMode === 'relativeDate' &&
+    clause.operator === 'eq' &&
+    isRelativeToken(clause.value)
+  ) {
+    return clause.value;
+  }
+  return clause.operator;
+}
+
+function clauseAfterOperator(
+  clause: ClauseValue,
+  next: string,
+): Partial<ClauseValue> {
+  if (isRelativeToken(next)) {
+    return {
+      operator: 'eq',
+      valueMode: 'relativeDate',
+      value: next,
+      valueLabel: undefined,
+    };
+  }
+  const operator = next as FilterOperator;
+  if (clause.valueMode === 'relativeDate' && clause.operator === 'eq') {
+    return {
+      operator,
+      value: '',
+      valueMode: undefined,
+      valueLabel: undefined,
+    };
+  }
+  if (clause.valueMode === 'relativeDate' && operator === 'eq') {
+    return {
+      operator,
+      value: '',
+      valueMode: undefined,
+      valueLabel: undefined,
+    };
+  }
+  return { operator };
+}
+
+function clauseAfterField(
+  clause: ClauseValue,
+  field: string,
+  catalog: FieldCatalog | null,
+): Partial<ClauseValue> {
+  const kind = controlKind(catalog, field);
+  const allowed = new Set(operatorsFor(kind).map((item) => item.value));
+  if (!allowed.has(displayedOperator(clause))) {
+    return {
+      field,
+      operator: 'eq',
+      value: '',
+      valueMode: undefined,
+      valueLabel: undefined,
+    };
+  }
+  if (clause.valueMode === 'relativeDate' && kind !== 'date') {
+    return {
+      field,
+      value: '',
+      valueMode: undefined,
+      valueLabel: undefined,
+    };
+  }
+  if (clause.valueMode === 'lookup' && kind !== 'lookup') {
+    return {
+      field,
+      value: '',
+      valueMode: undefined,
+      valueLabel: undefined,
+    };
+  }
+  return { field };
+}
 
 function boardPalette(theme: BoardTheme) {
   return {
@@ -120,7 +260,6 @@ function blankDataset(): Dataset {
     name: '',
     formId: '',
     dimension: { field: '', display: 'name' },
-    grain: null,
     series: null,
     seriesCases: [],
     measure: { field: '', display: 'value' },
@@ -377,8 +516,13 @@ function Overview({
   );
 }
 
-function fieldOptions(catalog: FieldCatalog | null) {
-  return (catalog?.fields ?? []).map((field) => ({
+function fieldOptions(catalog: FieldCatalog | null, kinds?: FieldKind[]) {
+  const fields = catalog?.fields ?? [];
+  const matched = kinds
+    ? fields.filter((field) => kinds.includes(field.kind))
+    : fields;
+  const visible = kinds && matched.length === 0 ? fields : matched;
+  return visible.map((field) => ({
     value: field.key,
     label: `${field.name}（${field.key}）`,
   }));
@@ -391,44 +535,250 @@ function valueOptions(catalog: FieldCatalog | null, field: string) {
     : knownOptions(field);
 }
 
-function FilterValueInput({
-  field,
+function lookupChoices(
+  value: string,
+  valueLabel: string | undefined,
+  hits: LookupMatch[],
+): { value: string; label: string }[] {
+  const names = new Map(hits.map((hit) => [hit.number, hit.name]));
+  if (value && valueLabel) {
+    names.set(value, valueLabel);
+  }
+  const options = [...names].map(([number, name]) => ({
+    value: number,
+    label: `${name}（${number}）`,
+  }));
+  if (value && !names.has(value)) {
+    options.unshift({ value, label: value });
+  }
+  return options;
+}
+
+function LookupValueInput({
+  formId,
   value,
-  catalog,
+  valueLabel,
   theme,
   onChange,
 }: {
-  field: string;
+  formId: string;
   value: string;
-  catalog: FieldCatalog | null;
+  valueLabel?: string;
   theme: BoardTheme;
-  onChange: (value: string) => void;
+  onChange: (patch: Partial<ClauseValue>) => void;
 }) {
-  const options = valueOptions(catalog, field);
-  if (options.length === 0) {
-    return (
-      <Input
-        className="flex-1"
-        placeholder="值"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      />
-    );
+  const [keyword, setKeyword] = useState('');
+  const [hits, setHits] = useState<LookupMatch[]>([]);
+
+  useEffect(() => {
+    const trimmed = keyword.trim();
+    if (!formId || trimmed.length < 1) {
+      setHits([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void searchLookup(formId, trimmed)
+        .then((found) => {
+          if (!cancelled) {
+            setHits(found);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setHits([]);
+          }
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [formId, keyword]);
+
+  const names = new Map(hits.map((hit) => [hit.number, hit.name]));
+  if (value && valueLabel) {
+    names.set(value, valueLabel);
   }
+
   return (
-    <SelectMenu
-      aria-label="值"
-      className="flex-1"
-      value={options.some((option) => option.value === value) ? value : ''}
-      placeholder="请选择"
+    <SuggestInput
+      value={value}
+      options={lookupChoices(value, valueLabel, hits)}
+      placeholder="搜索名称或编码"
       colors={suggestColors(theme)}
-      options={[{ value: '', label: '请选择' }, ...options]}
-      onChange={onChange}
+      onQuery={setKeyword}
+      onChange={(next) =>
+        onChange({
+          value: next,
+          valueLabel: names.get(next),
+          valueMode: 'lookup',
+        })
+      }
     />
   );
 }
 
-function FilterRows({
+function ClauseValueControl({
+  clause,
+  catalog,
+  theme,
+  onChange,
+}: {
+  clause: ClauseValue;
+  catalog: FieldCatalog | null;
+  theme: BoardTheme;
+  onChange: (patch: Partial<ClauseValue>) => void;
+}) {
+  if (clause.valueMode === 'field') {
+    return (
+      <div className="min-w-0 flex-1">
+        <SuggestInput
+          value={clause.value}
+          placeholder="比较字段"
+          options={fieldOptions(catalog)}
+          colors={suggestColors(theme)}
+          onChange={(value) => onChange({ value, valueMode: 'field' })}
+        />
+      </div>
+    );
+  }
+  if (
+    clause.valueMode === 'relativeDate' &&
+    clause.operator === 'eq' &&
+    isRelativeToken(clause.value)
+  ) {
+    return null;
+  }
+
+  const kind = controlKind(catalog, clause.field);
+  if (kind === 'date') {
+    const relativeLabel =
+      clause.valueMode === 'relativeDate' && isRelativeToken(clause.value)
+        ? RELATIVE_DATE_LABELS[clause.value]
+        : '';
+    const dateValue =
+      relativeLabel || !/^\d{4}-\d{2}-\d{2}$/.test(clause.value)
+        ? ''
+        : clause.value;
+    return (
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        {relativeLabel ? (
+          <span className="shrink-0 text-sm" style={{ color: theme.text }}>
+            {relativeLabel}
+          </span>
+        ) : null}
+        <Input
+          type="date"
+          aria-label="值"
+          className="min-w-0 flex-1"
+          value={dateValue}
+          onChange={(event) =>
+            onChange({
+              value: event.target.value,
+              valueMode: event.target.value ? 'literal' : undefined,
+              valueLabel: undefined,
+            })
+          }
+        />
+      </div>
+    );
+  }
+  if (kind === 'lookup') {
+    const formId =
+      catalog?.fields.find((item) => item.key === clause.field.trim())
+        ?.lookupFormId ?? '';
+    return (
+      <div className="min-w-0 flex-1">
+        <LookupValueInput
+          formId={formId}
+          value={clause.value}
+          valueLabel={clause.valueLabel}
+          theme={theme}
+          onChange={onChange}
+        />
+      </div>
+    );
+  }
+  if (kind === 'enum') {
+    const options = valueOptions(catalog, clause.field);
+    return (
+      <SelectMenu
+        aria-label="值"
+        className="min-w-0 flex-1"
+        value={
+          options.some((option) => option.value === clause.value)
+            ? clause.value
+            : ''
+        }
+        placeholder="请选择"
+        colors={suggestColors(theme)}
+        options={[{ value: '', label: '请选择' }, ...options]}
+        onChange={(value) =>
+          onChange({ value, valueMode: undefined, valueLabel: undefined })
+        }
+      />
+    );
+  }
+  if (kind === 'number') {
+    return (
+      <Input
+        type="number"
+        aria-label="值"
+        className="min-w-0 flex-1"
+        placeholder="值"
+        value={clause.value}
+        onChange={(event) =>
+          onChange({
+            value: event.target.value,
+            valueMode: undefined,
+            valueLabel: undefined,
+          })
+        }
+      />
+    );
+  }
+  return (
+    <Input
+      aria-label="值"
+      className="min-w-0 flex-1"
+      placeholder="值"
+      value={clause.value}
+      onChange={(event) =>
+        onChange({
+          value: event.target.value,
+          valueMode: undefined,
+          valueLabel: undefined,
+        })
+      }
+    />
+  );
+}
+
+function ClauseOperator({
+  clause,
+  catalog,
+  theme,
+  onChange,
+}: {
+  clause: ClauseValue;
+  catalog: FieldCatalog | null;
+  theme: BoardTheme;
+  onChange: (patch: Partial<ClauseValue>) => void;
+}) {
+  return (
+    <SelectMenu
+      aria-label="比较符"
+      className="w-40 shrink-0"
+      value={displayedOperator(clause)}
+      colors={suggestColors(theme)}
+      options={operatorsFor(controlKind(catalog, clause.field))}
+      onChange={(next) => onChange(clauseAfterOperator(clause, next))}
+    />
+  );
+}
+
+export function FilterRows({
   filters,
   catalog,
   theme,
@@ -465,67 +815,29 @@ function FilterRows({
       <div className="flex flex-col gap-2">
         {filters.map((filter, index) => (
           <div key={index} className="flex items-center gap-2">
-            <div className="flex-1">
+            <div className="min-w-0 flex-1">
               <SuggestInput
                 value={filter.field}
                 placeholder="字段"
                 options={fieldOptions(catalog)}
                 colors={suggestColors(theme)}
-                onChange={(field) => updateAt(index, { field })}
+                onChange={(field) =>
+                  updateAt(index, clauseAfterField(filter, field, catalog))
+                }
               />
             </div>
-            <SelectMenu
-              className="w-24 shrink-0"
-              value={filter.operator}
-              colors={suggestColors(theme)}
-              options={FILTER_OPERATORS}
-              onChange={(operator) =>
-                updateAt(index, { operator: operator as FilterOperator })
-              }
+            <ClauseOperator
+              clause={filter}
+              catalog={catalog}
+              theme={theme}
+              onChange={(patch) => updateAt(index, patch)}
             />
-            <SelectMenu
-              className="w-28 shrink-0"
-              value={filter.valueMode ?? 'literal'}
-              colors={suggestColors(theme)}
-              options={VALUE_MODES}
-              onChange={(mode) => {
-                const valueMode = mode as FilterValueMode;
-                updateAt(index, {
-                  valueMode,
-                  value: valueMode === 'relativeDate' ? 'today' : '',
-                });
-              }}
+            <ClauseValueControl
+              clause={filter}
+              catalog={catalog}
+              theme={theme}
+              onChange={(patch) => updateAt(index, patch)}
             />
-            {(filter.valueMode ?? 'literal') === 'relativeDate' ? (
-              <SelectMenu
-                className="flex-1"
-                value={filter.value}
-                colors={suggestColors(theme)}
-                options={RELATIVE_DATES.map((token) => ({
-                  value: token,
-                  label: RELATIVE_DATE_LABELS[token],
-                }))}
-                onChange={(value) => updateAt(index, { value })}
-              />
-            ) : (filter.valueMode ?? 'literal') === 'field' ? (
-              <div className="flex-1">
-                <SuggestInput
-                  value={filter.value}
-                  placeholder="比较字段"
-                  options={fieldOptions(catalog)}
-                  colors={suggestColors(theme)}
-                  onChange={(value) => updateAt(index, { value })}
-                />
-              </div>
-            ) : (
-              <FilterValueInput
-                field={filter.field}
-                value={filter.value}
-                catalog={catalog}
-                theme={theme}
-                onChange={(value) => updateAt(index, { value })}
-              />
-            )}
             <Button
               type="button"
               variant="ghost"
@@ -543,65 +855,42 @@ function FilterRows({
   );
 }
 
-const DISPLAYS: { value: FieldDisplay; label: string }[] = [
-  { value: 'name', label: '名称' },
-  { value: 'number', label: '编码' },
-  { value: 'value', label: '原值' },
-];
-
 function FieldInput({
   label,
   field,
   catalog,
   theme,
+  kinds,
   onChange,
 }: {
   label: string;
   field: FieldRef;
   catalog: FieldCatalog | null;
   theme: BoardTheme;
+  kinds?: FieldKind[];
   onChange: (field: FieldRef) => void;
 }) {
-  const lookup = catalog?.fields.find((item) => item.key === field.field);
-  const showDisplay =
-    Boolean(lookup?.lookupFormId) || field.field.includes('.');
   return (
     <div
       className="flex flex-col gap-1.5 text-sm"
       style={{ color: theme.textMuted }}
     >
       {label}
-      <div className="flex gap-2">
-        <div className="flex-1">
-          <SuggestInput
-            value={field.field}
-            placeholder="输入中文名或字段标识筛选"
-            options={(catalog?.fields ?? []).map((item) => ({
-              value: item.key,
-              label: `${item.name}（${item.key}）`,
-            }))}
-            colors={suggestColors(theme)}
-            onChange={(next) =>
-              onChange({
-                field: next,
-                display: next === field.field ? field.display : 'name',
-              })
-            }
-          />
-        </div>
-        {showDisplay ? (
-          <SelectMenu
-            aria-label={`${label}显示`}
-            className="w-24 shrink-0"
-            value={field.display}
-            colors={suggestColors(theme)}
-            options={DISPLAYS}
-            onChange={(display) =>
-              onChange({ ...field, display: display as FieldDisplay })
-            }
-          />
-        ) : null}
-      </div>
+      <SuggestInput
+        value={field.field}
+        placeholder="输入中文名或字段标识筛选"
+        options={fieldOptions(catalog, kinds)}
+        colors={suggestColors(theme)}
+        onChange={(next) =>
+          onChange({
+            field: next,
+            display:
+              next === field.field
+                ? field.display
+                : defaultFieldDisplay(catalog, next),
+          })
+        }
+      />
     </div>
   );
 }
@@ -618,12 +907,17 @@ function DatasetEditor({
   onSave: (dataset: Dataset) => void;
 }) {
   const sessionId = useKingdeeStore((state) => state.sessionId);
+  const serverUrl = useKingdeeStore((state) => state.serverUrl);
+  const acctName = useKingdeeStore((state) => state.acctName);
   const { toast } = useToast();
   const [draft, setDraft] = useState<Dataset>(dataset);
+  const [mode, setMode] = useState<Presentation>(presentationOf(dataset));
   const [catalog, setCatalog] = useState<FieldCatalog | null>(null);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
   const [preview, setPreview] = useState<QueryChartResult | null>(null);
+  const [previewPage, setPreviewPage] = useState(0);
   const [querying, setQuerying] = useState(false);
+  const catalogRequest = useRef(0);
 
   const update = (patch: Partial<Dataset>) =>
     setDraft((current) => ({ ...current, ...patch }));
@@ -639,55 +933,103 @@ function DatasetEditor({
     return false;
   };
 
-  const handleLoadCatalog = () => loadCatalogFor(draft.formId);
+  const handleLoadCatalog = () => loadCatalogFor(draft.formId, true);
 
-  const loadCatalogFor = async (formId: string) => {
+  const loadCatalogFor = (formId: string, force: boolean): number => {
+    const requestId = ++catalogRequest.current;
     if (!requireConnection()) {
-      return;
+      return requestId;
     }
-    if (!formId.trim()) {
+    const trimmed = formId.trim();
+    if (!trimmed) {
       toast({ title: '请先填写表单 ID' });
-      return;
+      return requestId;
     }
-    setLoadingCatalog(true);
-    try {
-      const loaded = await loadCatalog(formId.trim());
-      setCatalog(loaded);
-      toast({
-        title: '已读取字段',
-        description: `${loaded.formName}，共 ${loaded.fields.length} 个字段`,
-      });
-    } catch (error) {
-      toast({
-        title: '读取字段失败',
-        description: formatKingdeeError(error),
-        variant: 'destructive',
-      });
-    } finally {
-      setLoadingCatalog(false);
+    const { cached, fresh } = beginCatalogLoad(
+      { serverUrl, acctName },
+      trimmed,
+      { force },
+    );
+    if (cached) {
+      setCatalog(cached);
     }
+    setLoadingCatalog(force || !cached);
+    void fresh
+      .then((loaded) => {
+        if (catalogRequest.current !== requestId) {
+          return;
+        }
+        setCatalog(loaded);
+        if (force || !cached) {
+          toast({
+            title: '已读取字段',
+            description: `${loaded.formName}，共 ${loaded.fields.length} 个字段`,
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        if (catalogRequest.current !== requestId) {
+          return;
+        }
+        if (force || !cached) {
+          toast({
+            title: '读取字段失败',
+            description: formatKingdeeError(error),
+            variant: 'destructive',
+          });
+        }
+      })
+      .finally(() => {
+        if (catalogRequest.current === requestId) {
+          setLoadingCatalog(false);
+        }
+      });
+    return requestId;
   };
 
-  const handlePreview = async () => {
+  useEffect(() => {
+    if (!sessionId || !dataset.formId.trim()) {
+      return;
+    }
+    const requestId = loadCatalogFor(dataset.formId, false);
+    return () => {
+      if (catalogRequest.current === requestId) {
+        catalogRequest.current += 1;
+      }
+    };
+    // 打开配置或换账套时先用已保存的目录，再在后台向金蝶刷新。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, serverUrl, acctName, dataset.formId]);
+
+  const presented = resolveDataset(presentDataset(draft, mode), catalog);
+  const needs = fieldNeeds(mode, draft.chartType);
+  const labels = fieldLabels(draft.chartType);
+
+  const runPreview = async (page: number) => {
     if (!requireConnection()) {
       return;
     }
-    const check = validateDataset(draft);
+    const check = validateDataset(presented, mode, catalog);
     if (!check.valid) {
       toast({ title: '配置不完整', description: check.message });
       return;
     }
     setQuerying(true);
     try {
-      const result = await runQuery(draft);
+      const result = await runQuery(presented, { page });
       setPreview(result);
-      if (result.rows.length === 0 && result.detail.length === 0) {
+      setPreviewPage(page);
+      if (
+        page === 0 &&
+        result.rows.length === 0 &&
+        result.detail.length === 0
+      ) {
         toast({
           title: '没有可绘制的数据',
           description:
             result.fetched === 0
               ? '查询没有返回行，请检查表单 ID、字段和过滤条件'
-              : '度量字段不是数值。要按两个文本字段交叉统计，请把第二个字段填到「拆分系列」，度量留空并把聚合方式改为计数；要求和、请把度量换成数量或金额字段',
+              : measureNotNumericMessage(draft.chartType),
         });
       }
     } catch (error) {
@@ -709,12 +1051,12 @@ function DatasetEditor({
     });
 
   const handleSave = () => {
-    const check = validateDataset(draft);
+    const check = validateDataset(presented, mode, catalog);
     if (!check.valid) {
       toast({ title: '配置不完整', description: check.message });
       return;
     }
-    onSave(draft);
+    onSave(presented);
   };
 
   const muted = { color: theme.textMuted };
@@ -748,7 +1090,7 @@ function DatasetEditor({
                 setCatalog(null);
               }}
               onPick={(option) => {
-                void loadCatalogFor(option.value);
+                loadCatalogFor(option.value, false);
               }}
             />
           </label>
@@ -763,254 +1105,244 @@ function DatasetEditor({
             {loadingCatalog ? '读取中...' : '读取字段'}
           </Button>
         </div>
-        <FieldInput
-          label="维度（横轴）"
-          field={draft.dimension}
-          catalog={catalog}
-          theme={theme}
-          onChange={(dimension) => update({ dimension })}
-        />
-        <label className="flex items-end gap-2 pb-2 text-sm" style={muted}>
-          <input
-            type="checkbox"
-            className="mb-0.5"
-            checked={draft.grain === 'month'}
-            onChange={(event) =>
-              update({ grain: event.target.checked ? 'month' : null })
-            }
-          />
-          按月分组（维度为日期时）
-        </label>
-        <FieldInput
-          label="拆分系列（可选）"
-          field={draft.series ?? { field: '', display: 'name' }}
-          catalog={catalog}
-          theme={theme}
-          onChange={(series) =>
-            update({ series: series.field.trim() ? series : null })
-          }
-        />
-        <FieldInput
-          label="度量（数值）"
-          field={draft.measure}
-          catalog={catalog}
-          theme={theme}
-          onChange={(measure) => update({ measure })}
-        />
         <label className="flex flex-col gap-1.5 text-sm" style={muted}>
-          聚合方式
+          展示
           <SelectMenu
-            value={draft.aggregation}
+            aria-label="展示"
+            value={mode}
             colors={suggestColors(theme)}
             options={[
-              { value: 'sum', label: '求和' },
-              { value: 'count', label: '计数' },
+              { value: 'chart', label: '图表' },
+              { value: 'detail', label: '明细表' },
             ]}
-            onChange={(aggregation) =>
-              update({ aggregation: aggregation as Dataset['aggregation'] })
-            }
+            onChange={(next) => {
+              setMode(next as Presentation);
+              setPreview(null);
+              setPreviewPage(0);
+            }}
           />
         </label>
-        <label className="flex flex-col gap-1.5 text-sm" style={muted}>
-          显示组数上限
-          <Input
-            type="number"
-            min={1}
-            value={draft.limit}
-            onChange={(event) =>
-              update({ limit: Number(event.target.value) || 0 })
+        {mode === 'chart' ? (
+          <label className="flex flex-col gap-1.5 text-sm" style={muted}>
+            图表类型
+            <SelectMenu
+              aria-label="图表类型"
+              value={draft.chartType}
+              colors={suggestColors(theme)}
+              options={orderedChartTypes()}
+              onChange={(chartType) => {
+                update({ chartType: chartType as ChartType });
+                setPreview(null);
+                setPreviewPage(0);
+              }}
+            />
+          </label>
+        ) : null}
+        {mode === 'chart' ? (
+          <p className="text-sm md:col-span-2" style={muted}>
+            {SHAPE_HINTS[chartShape(draft.chartType)]}
+          </p>
+        ) : null}
+        {needs.dimension ? (
+          <FieldInput
+            label={labels.dimension}
+            field={draft.dimension}
+            catalog={catalog}
+            theme={theme}
+            onChange={(dimension) => update({ dimension })}
+          />
+        ) : null}
+        {needs.series ? (
+          <FieldInput
+            label={
+              needs.seriesRequired ? labels.series : `${labels.series}（可选）`
+            }
+            field={draft.series ?? { field: '', display: 'name' }}
+            catalog={catalog}
+            theme={theme}
+            onChange={(series) =>
+              update({ series: series.field.trim() ? series : null })
             }
           />
-        </label>
-        <label className="flex flex-col gap-1.5 text-sm" style={muted}>
-          图表类型
-          <SelectMenu
-            value={draft.chartType}
-            colors={suggestColors(theme)}
-            options={CHART_TYPES}
-            onChange={(chartType) =>
-              update({ chartType: chartType as ChartType })
-            }
-          />
-        </label>
-        <div className="md:col-span-2">
-          <div className="mb-2 flex items-center justify-between">
-            <span className="text-sm" style={muted}>
-              明细列（可选，生成明细表）
-            </span>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() =>
-                update({
-                  columns: [...draft.columns, { field: '', display: 'value' }],
-                })
+        ) : null}
+        {needs.aggregation ? (
+          <label className="flex flex-col gap-1.5 text-sm" style={muted}>
+            {labels.aggregation}
+            <SelectMenu
+              aria-label={labels.aggregation}
+              value={draft.aggregation}
+              colors={suggestColors(theme)}
+              options={[
+                { value: 'sum', label: '求和' },
+                { value: 'count', label: '计数' },
+              ]}
+              onChange={(aggregation) =>
+                update({ aggregation: aggregation as Dataset['aggregation'] })
               }
-            >
-              添加列
-            </Button>
-          </div>
-          <div className="flex flex-col gap-2">
-            {draft.columns.map((column, index) => (
-              <div key={index} className="flex items-center gap-2">
-                <div className="flex-1">
-                  <SuggestInput
-                    value={column.field}
-                    placeholder="列字段"
-                    options={fieldOptions(catalog)}
-                    colors={suggestColors(theme)}
-                    onChange={(field) =>
+            />
+          </label>
+        ) : null}
+        {needs.measure && draft.aggregation === 'sum' ? (
+          <FieldInput
+            label={labels.measure}
+            field={draft.measure}
+            catalog={catalog}
+            theme={theme}
+            kinds={['number']}
+            onChange={(measure) => update({ measure })}
+          />
+        ) : null}
+        {needs.columns ? (
+          <div className="md:col-span-2">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm" style={muted}>
+                明细列
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() =>
+                  update({
+                    columns: [
+                      ...draft.columns,
+                      { field: '', display: 'value' },
+                    ],
+                  })
+                }
+              >
+                添加列
+              </Button>
+            </div>
+            {draft.columns.length === 0 ? (
+              <p className="text-sm" style={muted}>
+                添加要显示的列。
+              </p>
+            ) : null}
+            <div className="flex flex-col gap-2">
+              {draft.columns.map((column, index) => (
+                <div key={index} className="flex items-center gap-2">
+                  <div className="flex-1">
+                    <SuggestInput
+                      value={column.field}
+                      placeholder="列字段"
+                      options={fieldOptions(catalog)}
+                      colors={suggestColors(theme)}
+                      onChange={(field) =>
+                        update({
+                          columns: draft.columns.map((item, current) =>
+                            current === index
+                              ? {
+                                  ...item,
+                                  field,
+                                  display:
+                                    field === item.field
+                                      ? item.display
+                                      : defaultFieldDisplay(catalog, field),
+                                }
+                              : item,
+                          ),
+                        })
+                      }
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
                       update({
-                        columns: draft.columns.map((item, current) =>
-                          current === index
-                            ? {
-                                ...item,
-                                field,
-                                display:
-                                  field === item.field ? item.display : 'name',
-                              }
-                            : item,
+                        columns: draft.columns.filter(
+                          (_, current) => current !== index,
                         ),
                       })
                     }
-                  />
+                  >
+                    移除
+                  </Button>
                 </div>
-                <SelectMenu
-                  aria-label="列显示"
-                  className="w-24 shrink-0"
-                  value={column.display}
-                  colors={suggestColors(theme)}
-                  options={DISPLAYS}
-                  onChange={(display) =>
-                    update({
-                      columns: draft.columns.map((item, current) =>
-                        current === index
-                          ? { ...item, display: display as FieldDisplay }
-                          : item,
-                      ),
-                    })
-                  }
-                />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() =>
-                    update({
-                      columns: draft.columns.filter(
-                        (_, current) => current !== index,
-                      ),
-                    })
-                  }
-                >
-                  移除
-                </Button>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
-        <div className="md:col-span-2">
-          <div className="mb-2 flex items-center justify-between">
-            <span className="text-sm" style={muted}>
-              条件拆分系列（可选，按条件给行归类）
-            </span>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() =>
-                update({
-                  seriesCases: [
-                    ...draft.seriesCases,
-                    { label: '', field: '', operator: 'lt', value: '' },
-                  ],
-                })
-              }
-            >
-              添加条件
-            </Button>
-          </div>
-          <div className="flex flex-col gap-2">
-            {draft.seriesCases.map((item, index) => (
-              <div key={index} className="flex items-center gap-2">
-                <Input
-                  className="w-28 shrink-0"
-                  placeholder="系列名"
-                  value={item.label}
-                  onChange={(event) =>
-                    updateCase(index, { label: event.target.value })
-                  }
-                />
-                <div className="flex-1">
-                  <SuggestInput
-                    value={item.field}
-                    placeholder="字段"
-                    options={fieldOptions(catalog)}
-                    colors={suggestColors(theme)}
-                    onChange={(field) => updateCase(index, { field })}
+        ) : null}
+        {needs.seriesCases ? (
+          <div className="md:col-span-2">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm" style={muted}>
+                条件拆分（可选，按条件给行归类）
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() =>
+                  update({
+                    seriesCases: [
+                      ...draft.seriesCases,
+                      { label: '', field: '', operator: 'eq', value: '' },
+                    ],
+                  })
+                }
+              >
+                添加条件
+              </Button>
+            </div>
+            <div className="flex flex-col gap-2">
+              {draft.seriesCases.map((item, index) => (
+                <div key={index} className="flex items-center gap-2">
+                  <Input
+                    className="w-28 shrink-0"
+                    placeholder="系列名"
+                    value={item.label}
+                    onChange={(event) =>
+                      updateCase(index, { label: event.target.value })
+                    }
                   />
-                </div>
-                <SelectMenu
-                  className="w-24 shrink-0"
-                  value={item.operator}
-                  colors={suggestColors(theme)}
-                  options={FILTER_OPERATORS}
-                  onChange={(operator) =>
-                    updateCase(index, { operator: operator as FilterOperator })
-                  }
-                />
-                <SelectMenu
-                  className="w-28 shrink-0"
-                  value={item.valueMode ?? 'literal'}
-                  colors={suggestColors(theme)}
-                  options={VALUE_MODES}
-                  onChange={(mode) => {
-                    const valueMode = mode as FilterValueMode;
-                    updateCase(index, {
-                      valueMode,
-                      value: valueMode === 'relativeDate' ? 'today' : '',
-                    });
-                  }}
-                />
-                {(item.valueMode ?? 'literal') === 'relativeDate' ? (
-                  <SelectMenu
-                    className="flex-1"
-                    value={item.value}
-                    colors={suggestColors(theme)}
-                    options={RELATIVE_DATES.map((token) => ({
-                      value: token,
-                      label: RELATIVE_DATE_LABELS[token],
-                    }))}
-                    onChange={(value) => updateCase(index, { value })}
-                  />
-                ) : (
-                  <FilterValueInput
-                    field={item.field}
-                    value={item.value}
+                  <div className="min-w-0 flex-1">
+                    <SuggestInput
+                      value={item.field}
+                      placeholder="字段"
+                      options={fieldOptions(catalog)}
+                      colors={suggestColors(theme)}
+                      onChange={(field) =>
+                        updateCase(
+                          index,
+                          clauseAfterField(item, field, catalog),
+                        )
+                      }
+                    />
+                  </div>
+                  <ClauseOperator
+                    clause={item}
                     catalog={catalog}
                     theme={theme}
-                    onChange={(value) => updateCase(index, { value })}
+                    onChange={(patch) => updateCase(index, patch)}
                   />
-                )}
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() =>
-                    update({
-                      seriesCases: draft.seriesCases.filter(
-                        (_, current) => current !== index,
-                      ),
-                    })
-                  }
-                >
-                  移除
-                </Button>
-              </div>
-            ))}
+                  <ClauseValueControl
+                    clause={item}
+                    catalog={catalog}
+                    theme={theme}
+                    onChange={(patch) => updateCase(index, patch)}
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      update({
+                        seriesCases: draft.seriesCases.filter(
+                          (_, current) => current !== index,
+                        ),
+                      })
+                    }
+                  >
+                    移除
+                  </Button>
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
+        ) : null}
         <div className="md:col-span-2">
           <FilterRows
             filters={draft.filters}
@@ -1025,7 +1357,7 @@ function DatasetEditor({
             className="bg-blue-600 text-white hover:bg-blue-700"
             disabled={querying}
             onClick={() => {
-              void handlePreview();
+              void runPreview(0);
             }}
           >
             {querying ? '查询中...' : '预览'}
@@ -1038,15 +1370,28 @@ function DatasetEditor({
           </Button>
         </div>
       </div>
-      {preview && (preview.rows.length > 0 || preview.detail.length > 0) ? (
+      {preview &&
+      (preview.rows.length > 0 ||
+        preview.detail.length > 0 ||
+        previewPage > 0) ? (
         <div className="h-80 rounded-xl border p-5" style={panelStyle(theme)}>
           <ChartView
-            dataset={draft}
-            chartType={draft.chartType}
+            dataset={presented}
+            chartType={presented.chartType}
             result={preview}
-            headers={columnHeaders(catalog, draft)}
+            headers={columnHeaders(catalog, presented)}
             palette={boardPalette(theme)}
             dark={theme.dark}
+            page={previewPage}
+            hasNext={preview.queryTruncated}
+            busy={querying}
+            onPage={
+              presented.columns.length > 0
+                ? (page) => {
+                    void runPreview(page);
+                  }
+                : undefined
+            }
           />
         </div>
       ) : null}
@@ -1080,11 +1425,12 @@ function DashboardView({
   onDelete: () => void;
 }) {
   const { toast } = useToast();
+  const serverUrl = useKingdeeStore((state) => state.serverUrl);
+  const acctName = useKingdeeStore((state) => state.acctName);
   const saveDashboard = useAnalysisStore((state) => state.saveDashboard);
   const saveWidget = useAnalysisStore((state) => state.saveWidget);
   const deleteWidget = useAnalysisStore((state) => state.deleteWidget);
   const [adding, setAdding] = useState(false);
-  const [filterFormId, setFilterFormId] = useState('');
   const [filterCatalog, setFilterCatalog] = useState<FieldCatalog | null>(null);
   const [loadingFilterFields, setLoadingFilterFields] = useState(false);
   const [widgetDraft, setWidgetDraft] = useState({
@@ -1097,34 +1443,68 @@ function DashboardView({
 
   const { width, containerRef, mounted } = useContainerWidth();
 
-  const filterForms = [
-    ...new Map(
-      dashboard.widgets
-        .map((widget) => datasets.find((item) => item.id === widget.datasetId))
-        .filter((item): item is Dataset => Boolean(item))
-        .map((item) => [item.formId, item.formId]),
-    ).values(),
-  ];
+  const filterFormKey = useMemo(() => {
+    const ids = dashboard.widgets
+      .map(
+        (widget) =>
+          datasets.find((item) => item.id === widget.datasetId)?.formId ?? '',
+      )
+      .filter((formId) => formId.trim().length > 0);
+    return [...new Set(ids)].join('\n');
+  }, [dashboard.widgets, datasets]);
 
-  const handleLoadFilterFields = async (formId: string) => {
-    setFilterFormId(formId);
-    if (!formId) {
+  useEffect(() => {
+    const formIds = filterFormKey ? filterFormKey.split('\n') : [];
+    if (formIds.length === 0) {
       setFilterCatalog(null);
+      setLoadingFilterFields(false);
       return;
     }
-    setLoadingFilterFields(true);
-    try {
-      setFilterCatalog(await loadCatalog(formId));
-    } catch (error) {
-      toast({
-        title: '读取字段失败',
-        description: formatKingdeeError(error),
-        variant: 'destructive',
+    const scope = { serverUrl, acctName };
+    let cancelled = false;
+    const cached = formIds
+      .map((formId) => readCatalogCache(scope, formId))
+      .filter((item): item is FieldCatalog => item != null);
+    setFilterCatalog(cached.length > 0 ? mergeCatalogs(cached) : null);
+    setLoadingFilterFields(cached.length === 0);
+    void Promise.allSettled(
+      formIds.map((formId) => beginCatalogLoad(scope, formId).fresh),
+    ).then((results) => {
+      if (cancelled) {
+        return;
+      }
+      const catalogs: FieldCatalog[] = [];
+      results.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          catalogs.push(result.value);
+          return;
+        }
+        const fallback = readCatalogCache(scope, formIds[index] ?? '');
+        if (fallback) {
+          catalogs.push(fallback);
+        }
       });
-    } finally {
+      const failed = results.find(
+        (result, index) =>
+          result.status === 'rejected' &&
+          readCatalogCache(scope, formIds[index] ?? '') == null,
+      );
+      if (failed?.status === 'rejected') {
+        toast({
+          title: '读取字段失败',
+          description: formatKingdeeError(failed.reason),
+          variant: 'destructive',
+        });
+      }
+      setFilterCatalog(catalogs.length > 0 ? mergeCatalogs(catalogs) : null);
       setLoadingFilterFields(false);
-    }
-  };
+    });
+    return () => {
+      cancelled = true;
+    };
+    // 表单集合或账套变化时先用缓存，再在后台刷新。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterFormKey, serverUrl, acctName]);
 
   const layout: LayoutItem[] = dashboard.widgets.map((widget, index) => ({
     i: widget.id,
@@ -1260,20 +1640,31 @@ function DashboardView({
               )}
             </div>
           </label>
-          <label className="flex flex-col gap-1.5 text-sm" style={muted}>
-            图表类型（默认用数据集的，可改）
-            <SelectMenu
-              value={widgetDraft.chartType}
-              colors={suggestColors(theme)}
-              options={CHART_TYPES}
-              onChange={(chartType) =>
-                setWidgetDraft({
-                  ...widgetDraft,
-                  chartType: chartType as ChartType,
-                })
-              }
-            />
-          </label>
+          {(datasets.find((item) => item.id === widgetDraft.datasetId)?.columns
+            .length ?? 0) > 0 ? (
+            <p className="pb-2 text-sm" style={muted}>
+              明细表，按数据集里的列显示
+            </p>
+          ) : (
+            <label className="flex flex-col gap-1.5 text-sm" style={muted}>
+              图表类型（只能换成同类图）
+              <SelectMenu
+                aria-label="图表类型"
+                value={widgetDraft.chartType}
+                colors={suggestColors(theme)}
+                options={compatibleChartTypes(
+                  datasets.find((item) => item.id === widgetDraft.datasetId)
+                    ?.chartType ?? widgetDraft.chartType,
+                )}
+                onChange={(chartType) =>
+                  setWidgetDraft({
+                    ...widgetDraft,
+                    chartType: chartType as ChartType,
+                  })
+                }
+              />
+            </label>
+          )}
           <Button type="button" onClick={handleAddWidget}>
             确定
           </Button>
@@ -1287,38 +1678,11 @@ function DashboardView({
         </div>
       ) : null}
       <div className="rounded-xl border p-4" style={panelStyle(theme)}>
-        <div className="mb-3 flex items-center gap-2">
-          <span className="text-sm" style={muted}>
-            过滤字段来源
-          </span>
-          <SelectMenu
-            aria-label="过滤字段来源"
-            className="w-64"
-            value={filterFormId}
-            placeholder="选择表单后可下拉选字段"
-            colors={suggestColors(theme)}
-            options={[
-              { value: '', label: '选择表单后可下拉选字段' },
-              ...filterForms.map((formId) => ({
-                value: formId,
-                label: formLabel(
-                  FORM_OPTIONS.find((option) => option.id === formId) ?? {
-                    id: formId,
-                    name: formId,
-                  },
-                ),
-              })),
-            ]}
-            onChange={(formId) => {
-              void handleLoadFilterFields(formId);
-            }}
-          />
-          {loadingFilterFields ? (
-            <span className="text-xs" style={muted}>
-              读取中...
-            </span>
-          ) : null}
-        </div>
+        {loadingFilterFields ? (
+          <p className="mb-2 text-xs" style={muted}>
+            读取字段...
+          </p>
+        ) : null}
         <FilterRows
           filters={dashboard.filters}
           catalog={filterCatalog}
@@ -1683,13 +2047,25 @@ function WidgetChart({
   theme: BoardTheme;
 }) {
   const sessionId = useKingdeeStore((state) => state.sessionId);
+  const serverUrl = useKingdeeStore((state) => state.serverUrl);
+  const acctName = useKingdeeStore((state) => state.acctName);
   const { toast } = useToast();
   const [result, setResult] = useState<QueryChartResult | null>(null);
   const [headers, setHeaders] = useState<ColumnHeader[] | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [page, setPage] = useState(0);
+  const [shownPage, setShownPage] = useState(0);
 
   const filterKey = JSON.stringify(filters);
+  const paging = sources.length === 0 && dataset.columns.length > 0;
+  const detailKey = `${dataset.id}:${filterKey}`;
+  const [pageKey, setPageKey] = useState(detailKey);
+  if (paging && pageKey !== detailKey) {
+    setPageKey(detailKey);
+    setPage(0);
+  }
+  const activePage = paging && pageKey === detailKey ? page : 0;
 
   useEffect(() => {
     if (!sessionId) {
@@ -1698,6 +2074,13 @@ function WidgetChart({
     let cancelled = false;
     setLoading(true);
     setFailed(false);
+    const scope = { serverUrl, acctName };
+    if (dataset.columns.length > 0) {
+      const cached = readCatalogCache(scope, dataset.formId);
+      if (cached) {
+        setHeaders(columnHeaders(cached, dataset));
+      }
+    }
     const run = async () => {
       const queried = sources.length
         ? await runMerged(
@@ -1706,18 +2089,30 @@ function WidgetChart({
               legend: source.name,
             })),
           )
-        : await runQuery({
-            ...dataset,
-            filters: [...dataset.filters, ...filters],
-          });
+        : await runQuery(
+            {
+              ...dataset,
+              filters: [...dataset.filters, ...filters],
+            },
+            { page: activePage },
+          );
       if (cancelled) {
         return;
       }
       setResult(queried);
+      setShownPage(activePage);
       if (dataset.columns.length > 0) {
-        const catalog = await loadCatalog(dataset.formId).catch(() => null);
-        if (!cancelled) {
-          setHeaders(columnHeaders(catalog, dataset));
+        try {
+          const catalog = await beginCatalogLoad(scope, dataset.formId).fresh;
+          if (!cancelled) {
+            setHeaders(columnHeaders(catalog, dataset));
+          }
+        } catch {
+          if (!cancelled) {
+            setHeaders(
+              columnHeaders(readCatalogCache(scope, dataset.formId), dataset),
+            );
+          }
         }
       }
     };
@@ -1742,7 +2137,15 @@ function WidgetChart({
     };
     // 过滤条件按内容比较，避免看板每次保存都触发重复查询。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, dataset, chartType, filterKey]);
+  }, [
+    sessionId,
+    dataset,
+    chartType,
+    filterKey,
+    serverUrl,
+    acctName,
+    activePage,
+  ]);
 
   if (!sessionId) {
     return (
@@ -1765,10 +2168,19 @@ function WidgetChart({
       </p>
     );
   }
-  if (!result || (result.rows.length === 0 && result.detail.length === 0)) {
+  const empty =
+    !result || (result.rows.length === 0 && result.detail.length === 0);
+  if (empty && shownPage === 0) {
     return (
       <p className="text-sm" style={{ color: theme.textMuted }}>
         没有可绘制的数据。
+      </p>
+    );
+  }
+  if (!result) {
+    return (
+      <p className="text-sm" style={{ color: theme.textMuted }}>
+        查询中...
       </p>
     );
   }
@@ -1780,6 +2192,10 @@ function WidgetChart({
       headers={headers}
       palette={boardPalette(theme)}
       dark={theme.dark}
+      page={shownPage}
+      hasNext={result.queryTruncated}
+      busy={loading}
+      onPage={paging ? setPage : undefined}
     />
   );
 }

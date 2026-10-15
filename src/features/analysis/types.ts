@@ -24,13 +24,15 @@ export type FilterOperator = 'eq' | 'neq' | 'contains' | 'gt' | 'lt';
 export type RelativeDate =
   'today' | 'thisMonth' | 'last6Months' | 'last365Days';
 
-export type FilterValueMode = 'literal' | 'field' | 'relativeDate';
+export type FilterValueMode = 'literal' | 'field' | 'relativeDate' | 'lookup';
 
 export interface Filter {
   field: string;
   operator: FilterOperator;
   value: string;
   valueMode?: FilterValueMode;
+  /** 基础资料点选后的名称，编译「包含」和回显时使用。 */
+  valueLabel?: string;
 }
 
 export type FieldDisplay = 'value' | 'name' | 'number';
@@ -40,14 +42,13 @@ export interface FieldRef {
   display: FieldDisplay;
 }
 
-export type TimeGrain = 'month';
-
 export interface SeriesCase {
   label: string;
   field: string;
   operator: FilterOperator;
   value: string;
   valueMode?: FilterValueMode;
+  valueLabel?: string;
 }
 
 export interface DatasetOrigin {
@@ -59,7 +60,6 @@ export interface Dataset {
   name: string;
   formId: string;
   dimension: FieldRef;
-  grain: TimeGrain | null;
   series: FieldRef | null;
   seriesCases: SeriesCase[];
   measure: FieldRef;

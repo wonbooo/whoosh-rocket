@@ -16,7 +16,6 @@ interface DatasetSpec {
   name: string;
   formId: string;
   dimension: FieldSpec;
-  grain?: 'month';
   measure?: FieldSpec;
   aggregation: 'sum' | 'count';
   columns?: FieldSpec[];
@@ -84,7 +83,6 @@ function dataset(spec: DatasetSpec, templateId: string): Dataset {
     name: spec.name,
     formId: spec.formId,
     dimension: ref(spec.dimension),
-    grain: spec.grain ?? null,
     series: null,
     seriesCases: spec.seriesCases ?? [],
     measure: spec.measure ? ref(spec.measure) : { field: '', display: 'value' },
@@ -249,7 +247,6 @@ const purchaseInbound: DatasetSpec[] = [
     name: '采购金额·订单',
     formId: 'PUR_PurchaseOrder',
     dimension: ['FDate', 'value'],
-    grain: 'month',
     measure: ['FAllAmount', 'value'],
     aggregation: 'sum',
     filters: [APPROVED, relative('FDate', 'thisMonth')],
@@ -261,7 +258,6 @@ const purchaseInbound: DatasetSpec[] = [
     name: '采购金额·入库',
     formId: 'STK_InStock',
     dimension: ['FDate', 'value'],
-    grain: 'month',
     measure: ['FAllAmount', 'value'],
     aggregation: 'sum',
     filters: [APPROVED, relative('FDate', 'thisMonth')],
@@ -272,7 +268,6 @@ const purchaseInbound: DatasetSpec[] = [
     name: '采购金额·退料',
     formId: 'PUR_MRB',
     dimension: ['FDate', 'value'],
-    grain: 'month',
     measure: ['FAllAmount', 'value'],
     aggregation: 'sum',
     filters: [APPROVED, relative('FDate', 'thisMonth')],
@@ -283,7 +278,6 @@ const purchaseInbound: DatasetSpec[] = [
     name: '逾期订单统计',
     formId: 'PUR_PurchaseOrder',
     dimension: ['FDeliveryDate', 'value'],
-    grain: 'month',
     aggregation: 'count',
     seriesCases: [
       {

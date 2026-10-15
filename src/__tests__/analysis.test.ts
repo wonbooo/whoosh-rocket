@@ -1,14 +1,29 @@
 import {
   aggregate,
+  compileFilter,
   compileFilters,
+  defaultFieldDisplay,
   fieldKeys,
   queryKey,
+  resolveDataset,
   resolveRelativeDate,
   validateDataset,
 } from '@/features/analysis/model';
 import type { AggregatedRow } from '@/features/analysis/model';
 import { chartData, chartSpec } from '@/features/analysis/chartSpec';
-import { parseCatalog } from '@/features/analysis/catalog';
+import {
+  controlKind,
+  mergeCatalogs,
+  parseCatalog,
+} from '@/features/analysis/catalog';
+import type { FieldCatalog } from '@/features/analysis/catalog';
+import {
+  readCatalogCache,
+  writeCatalogCache,
+  catalogCacheKey,
+} from '@/features/analysis/catalogCache';
+import type { CatalogScope } from '@/features/analysis/catalogCache';
+import { beginCatalogLoad, searchLookup } from '@/features/analysis/query';
 import { queryChart, queryMerged } from '@/features/analysis/merge';
 import {
   loadAnalysisSettings,
@@ -38,7 +53,6 @@ function dataset(overrides: Partial<Dataset> = {}): Dataset {
     name: '销售按客户',
     formId: 'SAL_SaleOrder',
     dimension: { field: 'FCustId', display: 'name' },
-    grain: null,
     series: null,
     seriesCases: [],
     measure: { field: 'FBillAmount', display: 'value' },
@@ -117,6 +131,73 @@ describe('dataset validation', () => {
   it('accepts a complete dataset', () => {
     expect(validateDataset(dataset()).valid).toBe(true);
   });
+
+  it('rejects a sum measure the catalog knows is not numeric', () => {
+    const catalog: FieldCatalog = {
+      formId: 'SAL_SaleOrder',
+      formName: '销售订单',
+      fields: [
+        {
+          key: 'FNote',
+          name: '备注',
+          entity: '',
+          kind: 'text',
+          lookupFormId: null,
+          options: [],
+        },
+      ],
+    };
+    expect(
+      validateDataset(
+        dataset({
+          chartType: 'bar-horizontal',
+          measure: { field: 'FNote', display: 'value' },
+        }),
+        'chart',
+        catalog,
+      ).message,
+    ).toBe(
+      'X 轴不是数值。要按两个文本字段交叉统计，请把第二个字段填到「图例」，X 轴留空并把统计方式改为计数；要求和、请把X 轴换成数量或金额字段',
+    );
+  });
+
+  it('accepts a sum measure when the catalog is missing or does not list the field', () => {
+    const catalog: FieldCatalog = {
+      formId: 'SAL_SaleOrder',
+      formName: '销售订单',
+      fields: [
+        {
+          key: 'FQty',
+          name: '数量',
+          entity: '',
+          kind: 'number',
+          lookupFormId: null,
+          options: [],
+        },
+      ],
+    };
+    expect(
+      validateDataset(
+        dataset({ measure: { field: 'FNote', display: 'value' } }),
+        'chart',
+        null,
+      ).valid,
+    ).toBe(true);
+    expect(
+      validateDataset(
+        dataset({ measure: { field: 'FNote', display: 'value' } }),
+        'chart',
+        catalog,
+      ).valid,
+    ).toBe(true);
+    expect(
+      validateDataset(
+        dataset({ measure: { field: 'FQty', display: 'value' } }),
+        'chart',
+        catalog,
+      ).valid,
+    ).toBe(true);
+  });
 });
 
 describe('query compilation', () => {
@@ -128,6 +209,98 @@ describe('query compilation', () => {
       'FMaterialId.FNumber',
     );
     expect(queryKey({ field: 'FQty', display: 'value' })).toBe('FQty');
+  });
+
+  it('does not suffix plain fields that were stored as names', () => {
+    const catalog: FieldCatalog = {
+      formId: 'PUR_PurchaseOrder',
+      formName: '采购订单',
+      fields: [
+        {
+          key: 'FSupplierId',
+          name: '供应商',
+          entity: 'FBillHead',
+          kind: 'lookup',
+          lookupFormId: 'BD_Supplier',
+          options: [],
+        },
+        {
+          key: 'FQty',
+          name: '采购数量',
+          entity: 'FPOOrderEntry',
+          kind: 'number',
+          lookupFormId: null,
+          options: [],
+        },
+        {
+          key: 'FDate',
+          name: '采购日期',
+          entity: 'FBillHead',
+          kind: 'date',
+          lookupFormId: null,
+          options: [],
+        },
+        {
+          key: 'FBillNo',
+          name: '单据编号',
+          entity: 'FBillHead',
+          kind: 'text',
+          lookupFormId: null,
+          options: [],
+        },
+        {
+          key: 'FDocumentStatus',
+          name: '单据状态',
+          entity: 'FBillHead',
+          kind: 'enum',
+          lookupFormId: null,
+          options: [],
+        },
+      ],
+    };
+    expect(defaultFieldDisplay(catalog, 'FQty')).toBe('value');
+    expect(defaultFieldDisplay(catalog, 'FDate')).toBe('value');
+    expect(defaultFieldDisplay(catalog, 'FBillNo')).toBe('value');
+    expect(defaultFieldDisplay(catalog, 'FDocumentStatus')).toBe('value');
+    expect(defaultFieldDisplay(catalog, 'FSupplierId')).toBe('name');
+    expect(defaultFieldDisplay(catalog, 'FUnknown')).toBe('name');
+    expect(defaultFieldDisplay(null, 'FQty')).toBe('name');
+    expect(
+      fieldKeys(
+        resolveDataset(
+          dataset({
+            formId: 'PUR_PurchaseOrder',
+            dimension: { field: 'FSupplierId', display: 'name' },
+            series: { field: 'FDocumentStatus', display: 'name' },
+            measure: { field: 'FQty', display: 'name' },
+            columns: [
+              { field: 'FDate', display: 'name' },
+              { field: 'FBillNo', display: 'number' },
+            ],
+          }),
+          catalog,
+        ),
+      ),
+    ).toBe('FSupplierId.FName,FDocumentStatus,FQty,FDate,FBillNo');
+    expect(
+      fieldKeys(
+        resolveDataset(
+          dataset({
+            dimension: { field: 'FSupplierId', display: 'number' },
+            measure: { field: 'FQty', display: 'value' },
+          }),
+          catalog,
+        ),
+      ),
+    ).toBe('FSupplierId.FNumber,FQty');
+    expect(
+      fieldKeys(
+        resolveDataset(
+          dataset({ measure: { field: 'FQty', display: 'name' } }),
+          null,
+        ),
+      ),
+    ).toBe('FCustId.FName,FQty.FName');
   });
 
   it('compiles field keys with the display property appended', () => {
@@ -219,10 +392,78 @@ describe('query compilation', () => {
       "FDeliveryDate < '2026-09-30' AND FDate >= '2026-09-01' AND FDate <= '2026-09-30'",
     );
   });
+
+  it('compiles a calendar date as a day range and keeps numeric comparisons', () => {
+    expect(
+      compileFilters([
+        { field: 'FDate', operator: 'eq', value: '2026-09-30' },
+        { field: 'FDate', operator: 'gt', value: '2026-09-30' },
+        { field: 'FDate', operator: 'lt', value: '2026-09-30' },
+        { field: 'FDate', operator: 'neq', value: '2026-12-31' },
+        { field: 'FBillAmount', operator: 'gt', value: '1000' },
+      ]),
+    ).toBe(
+      "FDate >= '2026-09-30' AND FDate < '2026-10-01' AND FDate >= '2026-10-01' AND FDate < '2026-09-30' AND (FDate < '2026-12-31' OR FDate >= '2027-01-01') AND FBillAmount > 1000",
+    );
+  });
+
+  it('compiles a supplier code by number and a contains by name', () => {
+    expect(
+      compileFilter({
+        field: 'FSupplierId',
+        operator: 'eq',
+        value: 'VEN001',
+        valueLabel: '甲供应商',
+        valueMode: 'lookup',
+      }),
+    ).toBe("FSupplierId.FNumber = 'VEN001'");
+    expect(
+      compileFilter({
+        field: 'FSupplierId',
+        operator: 'neq',
+        value: "O'Hara",
+        valueMode: 'lookup',
+      }),
+    ).toBe("FSupplierId.FNumber <> 'O''Hara'");
+    expect(
+      compileFilter({
+        field: 'FSupplierId',
+        operator: 'contains',
+        value: 'VEN001',
+        valueLabel: '甲供应商',
+        valueMode: 'lookup',
+      }),
+    ).toBe("FSupplierId.FName like '%甲供应商%'");
+    expect(
+      compileFilter({
+        field: 'FSupplierId.FName',
+        operator: 'contains',
+        value: '甲',
+        valueMode: 'lookup',
+      }),
+    ).toBe("FSupplierId.FName like '%甲%'");
+  });
+
+  it('accepts a calendar date for greater-than and still rejects text', () => {
+    expect(
+      validateDataset(
+        dataset({
+          filters: [{ field: 'FDate', operator: 'gt', value: '2026-09-30' }],
+        }),
+      ).valid,
+    ).toBe(true);
+    expect(
+      validateDataset(
+        dataset({
+          filters: [{ field: 'FDate', operator: 'lt', value: '2026-02-31' }],
+        }),
+      ).message,
+    ).toBe('大于、小于比较的值必须是数字');
+  });
 });
 
 describe('aggregation', () => {
-  it('sums per dimension and keeps the top groups', () => {
+  it('sums per dimension and keeps every group', () => {
     const result = aggregate(
       [
         ['甲公司', 100],
@@ -237,9 +478,10 @@ describe('aggregation', () => {
     expect(result.rows).toEqual([
       { dimension: '甲公司', value: 150, series: { '': 150 } },
       { dimension: '乙公司', value: 20, series: { '': 20 } },
+      { dimension: '丁公司', value: 5, series: { '': 5 } },
     ]);
     expect(result.skipped).toBe(2);
-    expect(result.truncated).toBe(true);
+    expect(result.truncated).toBe(false);
   });
 
   it('filters rows before aggregating', () => {
@@ -281,6 +523,61 @@ describe('aggregation', () => {
     ]);
   });
 
+  it('matches a lookup filter on the name or number, not the inner id', () => {
+    const contains = dataset({
+      aggregation: 'count',
+      dimension: { field: 'FMaterialId', display: 'name' },
+      columns: [{ field: 'FBillNo', display: 'value' }],
+      filters: [
+        {
+          field: 'FSupplierId',
+          operator: 'contains',
+          value: 'XLS',
+          valueMode: 'lookup',
+        },
+      ],
+    });
+    expect(fieldKeys(contains)).toBe(
+      'FMaterialId.FName,FBillNo,FSupplierId,FSupplierId.FName',
+    );
+    expect(
+      aggregate(
+        [
+          ['冻干鸡胸肉', 'CG001', '10001', '中宝（福建）食品科技有限公司XLS'],
+          ['玻璃瓶', 'CG002', '10002', '徐州乐蒂安玻璃制品有限公司'],
+        ],
+        contains,
+      ).rows,
+    ).toEqual([{ dimension: '冻干鸡胸肉', value: 1, series: { '': 1 } }]);
+
+    const equals = dataset({
+      aggregation: 'count',
+      dimension: { field: 'FMaterialId', display: 'name' },
+      columns: [{ field: 'FBillNo', display: 'value' }],
+      filters: [
+        {
+          field: 'FSupplierId',
+          operator: 'eq',
+          value: 'VEN001',
+          valueLabel: '中宝（福建）食品科技有限公司XLS',
+          valueMode: 'lookup',
+        },
+      ],
+    });
+    expect(fieldKeys(equals)).toBe(
+      'FMaterialId.FName,FBillNo,FSupplierId,FSupplierId.FNumber',
+    );
+    expect(
+      aggregate(
+        [
+          ['冻干鸡胸肉', 'CG001', '10001', 'VEN001'],
+          ['玻璃瓶', 'CG002', '10002', 'VEN002'],
+        ],
+        equals,
+      ).rows,
+    ).toEqual([{ dimension: '冻干鸡胸肉', value: 1, series: { '': 1 } }]);
+  });
+
   it('matches a datetime cell against the whole day', () => {
     const result = aggregate(
       [
@@ -299,6 +596,24 @@ describe('aggregation', () => {
         ],
       }),
       new Date(2026, 8, 30),
+    );
+    expect(result.rows).toEqual([
+      { dimension: '甲', value: 1, series: { '': 1 } },
+    ]);
+  });
+
+  it('matches a datetime cell against a calendar day', () => {
+    const result = aggregate(
+      [
+        ['甲', '2026-09-30T08:15:00'],
+        ['乙', '2026-10-01T00:00:00'],
+      ],
+      dataset({
+        aggregation: 'count',
+        filters: [
+          { field: 'FDeliveryDate', operator: 'eq', value: '2026-09-30' },
+        ],
+      }),
     );
     expect(result.rows).toEqual([
       { dimension: '甲', value: 1, series: { '': 1 } },
@@ -389,7 +704,7 @@ describe('aggregation', () => {
     ]);
   });
 
-  it('buckets dates by month and sorts chronologically', () => {
+  it('keeps each date when an older dataset still asks to group by month', () => {
     const result = aggregate(
       [
         ['2026-08-15', 5],
@@ -397,18 +712,20 @@ describe('aggregation', () => {
         ['2026-08-30', 7],
         ['2026-09-01', 1],
       ],
-      dataset({
-        dimension: { field: 'FDate', display: 'value' },
-        grain: 'month',
-        limit: 2,
-      }),
+      Object.assign(
+        dataset({
+          dimension: { field: 'FDate', display: 'value' },
+          limit: 2,
+        }),
+        { grain: 'month' },
+      ),
     );
-    expect(result.rows.map((row) => row.dimension)).toEqual([
-      '2026-07',
-      '2026-08',
+    expect(result.rows).toEqual([
+      { dimension: '2026-08-30', value: 7, series: { '': 7 } },
+      { dimension: '2026-08-15', value: 5, series: { '': 5 } },
+      { dimension: '2026-07-02', value: 3, series: { '': 3 } },
+      { dimension: '2026-09-01', value: 1, series: { '': 1 } },
     ]);
-    expect(result.rows[1]?.value).toBe(12);
-    expect(result.truncated).toBe(true);
   });
 
   it('splits rows into named series by conditions', () => {
@@ -543,6 +860,173 @@ describe('field catalog', () => {
     ]);
     expect(catalog.fields[1]?.options).toEqual([]);
   });
+
+  it('classifies date, number, lookup, enum and text fields', () => {
+    const catalog = parseCatalog('PUR_PurchaseOrder', {
+      Result: {
+        NeedReturnData: {
+          Entrys: [
+            {
+              Key: 'FBillHead',
+              Fields: [
+                {
+                  Key: 'FDate',
+                  Name: [{ Key: 2052, Value: '日期' }],
+                  FieldType: 61,
+                },
+                {
+                  Key: 'FQty',
+                  Name: [{ Key: 2052, Value: '数量' }],
+                  FieldType: '56',
+                },
+                {
+                  Key: 'FSupplierId',
+                  Name: [{ Key: 2052, Value: '供应商' }],
+                  LookUpObjectFormId: 'BD_Supplier',
+                  FieldType: 56,
+                },
+                {
+                  Key: 'FDocumentStatus',
+                  Name: [{ Key: 2052, Value: '单据状态' }],
+                  EnumObject: {
+                    Items: [
+                      { Value: 'A', Caption: [{ Key: 2052, Value: '创建' }] },
+                      { Value: 'C', Caption: [{ Key: 2052, Value: '已审核' }] },
+                    ],
+                  },
+                },
+                {
+                  Key: 'FDeliveryDate',
+                  Name: [{ Key: 2052, Value: '交货日期' }],
+                },
+                {
+                  Key: 'FNote',
+                  Name: [{ Key: 2052, Value: '备注日期' }],
+                  FieldType: 167,
+                },
+                { Key: 'FBillNo', Name: [{ Key: 2052, Value: '单据编号' }] },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    expect(catalog.fields.map((field) => [field.key, field.kind])).toEqual([
+      ['FDate', 'date'],
+      ['FQty', 'number'],
+      ['FSupplierId', 'lookup'],
+      ['FDocumentStatus', 'enum'],
+      ['FDeliveryDate', 'date'],
+      ['FNote', 'text'],
+      ['FBillNo', 'text'],
+    ]);
+    expect(controlKind(catalog, 'FCloseStatus')).toBe('enum');
+    expect(controlKind(null, 'FDeliveryDate')).toBe('date');
+  });
+
+  it('unions fields from the forms on a dashboard by key', () => {
+    const merged = mergeCatalogs([
+      {
+        formId: 'PUR_PurchaseOrder',
+        formName: '采购订单',
+        fields: [
+          {
+            key: 'FSupplierId',
+            name: '供应商',
+            entity: '',
+            kind: 'lookup',
+            lookupFormId: 'BD_Supplier',
+            options: [],
+          },
+          {
+            key: 'FDate',
+            name: '日期',
+            entity: '',
+            kind: 'date',
+            lookupFormId: null,
+            options: [],
+          },
+          {
+            key: 'FDocumentStatus',
+            name: '单据状态',
+            entity: '',
+            kind: 'enum',
+            lookupFormId: null,
+            options: [{ value: 'C', label: '已审核' }],
+          },
+        ],
+      },
+      {
+        formId: 'PUR_ReceiveBill',
+        formName: '收料通知单',
+        fields: [
+          {
+            key: 'FSupplierId',
+            name: '供应商',
+            entity: '',
+            kind: 'text',
+            lookupFormId: null,
+            options: [],
+          },
+          {
+            key: 'FDate',
+            name: 'FDate',
+            entity: '',
+            kind: 'text',
+            lookupFormId: null,
+            options: [],
+          },
+          {
+            key: 'FBillNo',
+            name: '单据编号',
+            entity: '',
+            kind: 'text',
+            lookupFormId: null,
+            options: [],
+          },
+          {
+            key: 'FDocumentStatus',
+            name: '单据状态',
+            entity: '',
+            kind: 'enum',
+            lookupFormId: null,
+            options: [{ value: 'A', label: '创建' }],
+          },
+        ],
+      },
+    ]);
+    expect(
+      merged.fields.map((field) => [field.key, field.kind, field.name]),
+    ).toEqual([
+      ['FSupplierId', 'lookup', '供应商'],
+      ['FDate', 'date', '日期'],
+      ['FDocumentStatus', 'enum', '单据状态'],
+      ['FBillNo', 'text', '单据编号'],
+    ]);
+    expect(merged.fields[0]?.lookupFormId).toBe('BD_Supplier');
+    expect(merged.fields[2]?.options).toEqual([
+      { value: 'C', label: '已审核' },
+      { value: 'A', label: '创建' },
+    ]);
+  });
+
+  it('searches lookup numbers and names without extra filters', async () => {
+    const query = vi.fn().mockResolvedValue({
+      rows: [['VEN001', '甲供应商']],
+    });
+    await expect(searchLookup('BD_Supplier', "O'Hara", query)).resolves.toEqual(
+      [{ number: 'VEN001', name: '甲供应商' }],
+    );
+    expect(query).toHaveBeenCalledWith({
+      formId: 'BD_Supplier',
+      fieldKeys: 'FNumber,FName',
+      filterString: "(FNumber like '%O''Hara%' OR FName like '%O''Hara%')",
+      topCount: 20,
+    });
+    await expect(searchLookup('BD_Supplier', '  ', query)).resolves.toEqual([]);
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
   it('returns no fields for an unrecognized payload', () => {
     expect(parseCatalog('X', { unexpected: true }).fields).toEqual([]);
   });
@@ -584,7 +1068,10 @@ describe('analysis storage', () => {
     const record = memoryRecord();
     record.set(
       'datasets',
-      JSON.stringify([{ ...dataset(), grain: undefined, columns: undefined }]),
+      JSON.stringify([
+        { ...dataset(), grain: undefined, columns: undefined },
+        { ...dataset(), id: 'ds-month', grain: 'month' },
+      ]),
     );
     record.set(
       'dashboards',
@@ -592,11 +1079,12 @@ describe('analysis storage', () => {
     );
     const loaded = loadAnalysisState(record);
     expect(loaded.datasets[0]).toMatchObject({
-      grain: null,
       seriesCases: [],
       columns: [],
       chartType: 'bar',
     });
+    expect(loaded.datasets[0]).not.toHaveProperty('grain');
+    expect(loaded.datasets[1]).not.toHaveProperty('grain');
     expect(loaded.dashboards[0]?.filters).toEqual([]);
   });
 
@@ -685,14 +1173,68 @@ describe('chart spec', () => {
     });
   });
 
-  it('draws a line of the totals without grouping', () => {
+  it('draws a line of the totals in one color', () => {
     expect(
-      chartSpec('line', chartData(rows, false), false, '计数'),
+      chartSpec(
+        'line',
+        chartData(rows, false),
+        false,
+        '计数',
+        false,
+        undefined,
+        undefined,
+        'line-1',
+      ),
     ).toMatchObject({
       type: 'line',
       transform: [],
-      encode: { color: 'dimension' },
+      encode: { x: 'dimension', y: 'value', color: undefined },
+      legend: false,
+      style: {
+        lineWidth: 2,
+        fill: expect.any(String),
+        stroke: expect.any(String),
+      },
     });
+  });
+
+  it('paints an unsplit bar with one stable palette color and no legend', () => {
+    const palette = {
+      colors: ['#111111', '#222222', '#333333', '#444444'],
+      text: '#000',
+      muted: '#111',
+      grid: '#222',
+    };
+    const specFor = (seed: string) =>
+      chartSpec(
+        'bar',
+        chartData(
+          [{ dimension: '甲公司', value: 150, series: { '': 150 } }],
+          false,
+        ),
+        false,
+        '采购数量',
+        false,
+        palette,
+        undefined,
+        seed,
+      );
+    const first = specFor('supplier-qty');
+    expect(first).toMatchObject({
+      type: 'interval',
+      transform: [],
+      encode: { x: 'dimension', y: 'value', color: undefined },
+      legend: false,
+    });
+    const fill = (first.style as { fill?: string } | undefined)?.fill;
+    expect(palette.colors).toContain(fill);
+    expect(specFor('supplier-qty')).toMatchObject({
+      style: { fill, stroke: fill },
+    });
+    const fills = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map(
+      (seed) => (specFor(seed).style as { fill?: string }).fill,
+    );
+    expect(new Set(fills).size).toBeGreaterThan(1);
   });
 
   it('draws a pie on a theta coordinate', () => {
@@ -708,6 +1250,51 @@ describe('chart spec', () => {
 });
 
 describe('query execution', () => {
+  it('does not require a row cap for a detail table', () => {
+    expect(
+      validateDataset(
+        dataset({
+          columns: [{ field: 'FBillNo', display: 'value' }],
+          limit: 0,
+        }),
+        'detail',
+      ).valid,
+    ).toBe(true);
+  });
+
+  it('pages a detail table from the server instead of slicing a local cap', async () => {
+    const seen: unknown[] = [];
+    const rows = Array.from({ length: 50 }, (_, index) => [`PO${index}`]);
+    const result = await queryChart(
+      dataset({
+        limit: 20,
+        dimension: { field: '', display: 'name' },
+        measure: { field: '', display: 'value' },
+        aggregation: 'count',
+        columns: [{ field: 'FBillNo', display: 'value' }],
+      }),
+      async (params) => {
+        seen.push(params);
+        return { rows, truncated: true };
+      },
+      new Date(),
+      1,
+    );
+    expect(seen).toEqual([
+      {
+        formId: 'SAL_SaleOrder',
+        fieldKeys: 'FBillNo',
+        filterString: '',
+        topCount: 0,
+        startRow: 50,
+        limit: 50,
+        orderString: 'FBillNo ASC',
+      },
+    ]);
+    expect(result.detail).toHaveLength(50);
+    expect(result.queryTruncated).toBe(true);
+  });
+
   it('compiles the query and reports truncation', async () => {
     const seen: unknown[] = [];
     const result = await queryChart(
@@ -776,6 +1363,164 @@ describe('query execution', () => {
       },
       { dimension: '2026-09', value: 7, series: { 采购入库单: 7 } },
     ]);
+  });
+});
+
+describe('catalog cache', () => {
+  function memoryRecord(): PersistedRecord {
+    const values = new Map<string, string>();
+    return {
+      get: (key) => values.get(key) ?? null,
+      set: (key, value) => values.set(key, value),
+      remove: (key) => values.delete(key),
+    };
+  }
+
+  const scope: CatalogScope = {
+    serverUrl: 'http://47.99.149.34/k3cloud/',
+    acctName: '测试账套',
+  };
+
+  const stored: FieldCatalog = {
+    formId: 'PUR_PurchaseOrder',
+    formName: '采购订单',
+    fields: [
+      {
+        key: 'FSupplierId',
+        name: '供应商',
+        entity: 'FBillHead',
+        kind: 'lookup',
+        lookupFormId: 'BD_Supplier',
+        options: [],
+      },
+      {
+        key: 'FQty',
+        name: '采购数量',
+        entity: 'FPOOrderEntry',
+        kind: 'number',
+        lookupFormId: null,
+        options: [],
+      },
+    ],
+  };
+
+  const metadataPayload = {
+    Result: {
+      NeedReturnData: {
+        Name: [{ Key: 2052, Value: '采购订单' }],
+        Entrys: [
+          {
+            Key: 'FBillHead',
+            Fields: [
+              {
+                Key: 'FQty',
+                Name: [{ Key: 2052, Value: '采购数量' }],
+                FieldType: 56,
+              },
+            ],
+          },
+        ],
+      },
+    },
+  };
+
+  it('keeps catalogs for each server, account and form', () => {
+    const record = memoryRecord();
+    writeCatalogCache(scope, 'PUR_PurchaseOrder', stored, record);
+    expect(readCatalogCache(scope, 'PUR_PurchaseOrder', record)).toEqual(
+      stored,
+    );
+    expect(
+      readCatalogCache(
+        { ...scope, serverUrl: 'http://47.99.149.34/k3cloud' },
+        'PUR_PurchaseOrder',
+        record,
+      ),
+    ).toEqual(stored);
+    expect(
+      readCatalogCache(
+        { ...scope, acctName: '另一账套' },
+        'PUR_PurchaseOrder',
+        record,
+      ),
+    ).toBeNull();
+    expect(readCatalogCache(scope, 'SAL_SaleOrder', record)).toBeNull();
+    expect(
+      writeCatalogCache(
+        { serverUrl: '', acctName: scope.acctName },
+        'PUR_PurchaseOrder',
+        stored,
+        record,
+      ),
+    ).toBeUndefined();
+    expect(
+      catalogCacheKey({ serverUrl: ' ', acctName: '账套' }, 'X'),
+    ).toBeNull();
+  });
+
+  it('ignores a catalog that cannot be read back', () => {
+    const record = memoryRecord();
+    const key = catalogCacheKey(scope, 'PUR_PurchaseOrder');
+    record.set(key!, '{');
+    expect(readCatalogCache(scope, 'PUR_PurchaseOrder', record)).toBeNull();
+    record.set(
+      key!,
+      JSON.stringify({ formId: 'PUR_PurchaseOrder', fields: [] }),
+    );
+    expect(readCatalogCache(scope, 'PUR_PurchaseOrder', record)).toBeNull();
+  });
+
+  it('shows the saved catalog and replaces it when refresh succeeds', async () => {
+    const record = memoryRecord();
+    writeCatalogCache(scope, 'PUR_PurchaseOrder', stored, record);
+    let release: (value: unknown) => void = () => undefined;
+    const pending = beginCatalogLoad(scope, 'PUR_PurchaseOrder', {
+      record,
+      metadata: () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    });
+    expect(pending.cached).toEqual(stored);
+    release(metadataPayload);
+    const fresh = await pending.fresh;
+    expect(fresh.fields.map((field) => field.key)).toEqual(['FQty']);
+    expect(
+      readCatalogCache(scope, 'PUR_PurchaseOrder', record)?.fields.map(
+        (field) => field.key,
+      ),
+    ).toEqual(['FQty']);
+  });
+
+  it('keeps the saved catalog when refresh fails', async () => {
+    const record = memoryRecord();
+    writeCatalogCache(scope, 'PUR_PurchaseOrder', stored, record);
+    const pending = beginCatalogLoad(scope, 'PUR_PurchaseOrder', {
+      record,
+      metadata: () => Promise.reject(new Error('offline')),
+    });
+    expect(pending.cached).toEqual(stored);
+    await expect(pending.fresh).rejects.toThrow('offline');
+    expect(readCatalogCache(scope, 'PUR_PurchaseOrder', record)).toEqual(
+      stored,
+    );
+  });
+
+  it('does not report a cache hit when the read is forced', async () => {
+    const record = memoryRecord();
+    writeCatalogCache(scope, 'PUR_PurchaseOrder', stored, record);
+    const pending = beginCatalogLoad(scope, 'PUR_PurchaseOrder', {
+      force: true,
+      record,
+      metadata: async () => metadataPayload,
+    });
+    expect(pending.cached).toBeNull();
+    await pending.fresh;
+    expect(
+      readCatalogCache(scope, 'PUR_PurchaseOrder', record)?.fields.map(
+        (field) => field.key,
+      ),
+    ).toEqual(['FQty']);
   });
 });
 

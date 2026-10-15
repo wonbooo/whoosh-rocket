@@ -1,10 +1,17 @@
+import type { FieldCatalog } from '@/features/analysis/catalog';
+import {
+  fieldLabels,
+  fieldNeeds,
+  measureNotNumericMessage,
+} from '@/features/analysis/presentation';
+import type { Presentation } from '@/features/analysis/presentation';
 import type {
   Dataset,
+  FieldDisplay,
   FieldRef,
   Filter,
   FilterOperator,
   RelativeDate,
-  TimeGrain,
 } from '@/features/analysis/types';
 
 export interface ValidationResult {
@@ -34,58 +41,85 @@ function checkIdentifier(
   return null;
 }
 
-export function validateDataset(dataset: Dataset): ValidationResult {
+export function validateDataset(
+  dataset: Dataset,
+  mode: Presentation = dataset.columns.length > 0 ? 'detail' : 'chart',
+  catalog: FieldCatalog | null = null,
+): ValidationResult {
   if (!dataset.name.trim()) {
     return { valid: false, message: '请填写数据集名称' };
   }
-  for (const [value, label] of [
-    [dataset.formId, '表单 ID'],
-    [dataset.dimension.field, '维度字段'],
-  ] as const) {
-    const problem = checkIdentifier(value, label);
+  const formProblem = checkIdentifier(dataset.formId, '表单 ID');
+  if (formProblem) {
+    return formProblem;
+  }
+  const needs = fieldNeeds(mode, dataset.chartType);
+  const labels = fieldLabels(dataset.chartType);
+  if (needs.columns) {
+    if (dataset.columns.length === 0) {
+      return { valid: false, message: '请添加明细列' };
+    }
+    for (const column of dataset.columns) {
+      const problem = checkIdentifier(column.field, '明细列字段');
+      if (problem) {
+        return problem;
+      }
+    }
+  }
+  if (needs.dimension) {
+    const problem = checkIdentifier(dataset.dimension.field, labels.dimension);
     if (problem) {
       return problem;
     }
   }
-  if (dataset.series) {
-    const problem = checkIdentifier(dataset.series.field, '拆分系列字段');
+  if (needs.seriesRequired) {
+    const problem = checkIdentifier(dataset.series?.field ?? '', labels.series);
+    if (problem) {
+      return problem;
+    }
+  } else if (needs.series && dataset.series) {
+    const problem = checkIdentifier(dataset.series.field, labels.series);
     if (problem) {
       return problem;
     }
   }
-  for (const item of dataset.seriesCases) {
-    const problem = checkIdentifier(item.field, '条件拆分字段');
+  if (needs.seriesCases) {
+    for (const item of dataset.seriesCases) {
+      const problem = checkIdentifier(item.field, '条件拆分字段');
+      if (problem) {
+        return problem;
+      }
+      if (!item.label.trim()) {
+        return { valid: false, message: '请填写条件拆分的系列名' };
+      }
+    }
+  }
+  if (needs.measure && dataset.aggregation === 'sum') {
+    const problem = checkIdentifier(dataset.measure.field, labels.measure);
     if (problem) {
       return problem;
     }
-    if (!item.label.trim()) {
-      return { valid: false, message: '请填写条件拆分的系列名' };
-    }
-  }
-  for (const column of dataset.columns) {
-    const problem = checkIdentifier(column.field, '明细列字段');
-    if (problem) {
-      return problem;
-    }
-  }
-  if (dataset.grain && !dataset.dimension.field.trim()) {
-    return { valid: false, message: '按时间分组需要维度字段' };
-  }
-  if (dataset.aggregation === 'sum') {
-    const problem = checkIdentifier(dataset.measure.field, '度量字段');
-    if (problem) {
-      return problem;
+    const known = catalog?.fields.find(
+      (item) => item.key === dataset.measure.field.trim(),
+    );
+    if (known && known.kind !== 'number') {
+      return {
+        valid: false,
+        message: measureNotNumericMessage(dataset.chartType),
+      };
     }
   }
   if (
+    needs.dimension &&
+    needs.measure &&
     dataset.aggregation === 'sum' &&
     !dataset.series &&
     dataset.dimension.field.trim() === dataset.measure.field.trim()
   ) {
-    return { valid: false, message: '维度和度量不能是同一个字段' };
-  }
-  if (!Number.isInteger(dataset.limit) || dataset.limit < 1) {
-    return { valid: false, message: '显示组数上限至少为 1' };
+    return {
+      valid: false,
+      message: `${labels.dimension}和${labels.measure}不能是同一个字段`,
+    };
   }
   for (const filter of dataset.filters) {
     const problem = checkIdentifier(filter.field, '过滤字段');
@@ -111,12 +145,66 @@ export function validateDataset(dataset: Dataset): ValidationResult {
     }
     if (
       (filter.operator === 'gt' || filter.operator === 'lt') &&
+      !isCalendarDate(filter.value.trim()) &&
       Number.isNaN(Number(filter.value.trim()))
     ) {
       return { valid: false, message: '大于、小于比较的值必须是数字' };
     }
   }
+  if (!needs.columns && fieldKeys(dataset) === '') {
+    return {
+      valid: false,
+      message: `计数需要至少一条过滤条件，或改为求和并填写${labels.measure}`,
+    };
+  }
   return { valid: true, message: '' };
+}
+
+/** 目录里能确认该字段不是基础资料。没有目录或目录里没有这个字段时返回 false。 */
+function confirmedPlainField(
+  catalog: FieldCatalog | null,
+  field: string,
+): boolean {
+  const key = field.trim();
+  if (!catalog || !key) {
+    return false;
+  }
+  const match = catalog.fields.find((item) => item.key === key);
+  if (!match) {
+    return false;
+  }
+  return !match.lookupFormId && match.kind !== 'lookup';
+}
+
+export function defaultFieldDisplay(
+  catalog: FieldCatalog | null,
+  field: string,
+): FieldDisplay {
+  return confirmedPlainField(catalog, field) ? 'value' : 'name';
+}
+
+function resolveField(ref: FieldRef, catalog: FieldCatalog | null): FieldRef {
+  if (!confirmedPlainField(catalog, ref.field) || ref.display === 'value') {
+    return ref;
+  }
+  return { ...ref, display: 'value' };
+}
+
+/** 数量、日期、枚举、文本没有名称和编码。选字段时曾一律记成「名称」，这里按目录改回原值。 */
+export function resolveDataset(
+  dataset: Dataset,
+  catalog: FieldCatalog | null,
+): Dataset {
+  if (!catalog) {
+    return dataset;
+  }
+  return {
+    ...dataset,
+    dimension: resolveField(dataset.dimension, catalog),
+    series: dataset.series ? resolveField(dataset.series, catalog) : null,
+    measure: resolveField(dataset.measure, catalog),
+    columns: dataset.columns.map((column) => resolveField(column, catalog)),
+  };
 }
 
 export function queryKey(ref: FieldRef): string {
@@ -131,35 +219,34 @@ export function queryKey(ref: FieldRef): string {
 }
 
 export function fieldKeys(dataset: Dataset): string {
-  const keys = [queryKey(dataset.dimension)];
-  if (dataset.series) {
-    keys.push(queryKey(dataset.series));
-  }
-  if (dataset.aggregation === 'sum') {
-    keys.push(queryKey(dataset.measure));
-  }
-  for (const item of dataset.seriesCases) {
-    const field = item.field.trim();
-    if (!keys.includes(field)) {
-      keys.push(field);
-    }
-  }
-  for (const column of dataset.columns) {
-    const key = queryKey(column);
-    if (!keys.includes(key)) {
+  const keys: string[] = [];
+  const add = (key: string) => {
+    if (key && !keys.includes(key)) {
       keys.push(key);
     }
+  };
+  if (dataset.dimension.field.trim()) {
+    add(queryKey(dataset.dimension));
+  }
+  if (dataset.series?.field.trim()) {
+    add(queryKey(dataset.series));
+  }
+  if (dataset.aggregation === 'sum' && dataset.measure.field.trim()) {
+    add(queryKey(dataset.measure));
+  }
+  for (const item of dataset.seriesCases) {
+    add(item.field.trim());
+  }
+  for (const column of dataset.columns) {
+    add(queryKey(column));
   }
   for (const filter of dataset.filters) {
-    const field = filter.field.trim();
-    if (!keys.includes(field)) {
-      keys.push(field);
-    }
+    add(filter.field.trim());
     if (filter.valueMode === 'field') {
-      const target = filter.value.trim();
-      if (!keys.includes(target)) {
-        keys.push(target);
-      }
+      add(filter.value.trim());
+    }
+    if (filter.valueMode === 'lookup') {
+      add(lookupMatchKey(filter));
     }
   }
   return keys.join(',');
@@ -213,6 +300,88 @@ export function resolveRelativeDate(
   return { start: formatDate(from), end: formatDate(start) };
 }
 
+function isCalendarDate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) {
+    return false;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+  return (
+    date.getFullYear() === year &&
+    date.getMonth() === month - 1 &&
+    date.getDate() === day
+  );
+}
+
+function nextCalendarDay(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) {
+    return value;
+  }
+  const date = new Date(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+  );
+  date.setDate(date.getDate() + 1);
+  return formatDate(date);
+}
+
+function compileCalendarDate(
+  field: string,
+  operator: FilterOperator,
+  value: string,
+): string {
+  const next = nextCalendarDay(value);
+  if (operator === 'gt') {
+    return `${field} >= ${quote(next)}`;
+  }
+  if (operator === 'lt') {
+    return `${field} < ${quote(value)}`;
+  }
+  if (operator === 'neq') {
+    return `(${field} < ${quote(value)} OR ${field} >= ${quote(next)})`;
+  }
+  return `${field} >= ${quote(value)} AND ${field} < ${quote(next)}`;
+}
+
+function hasLookupSuffix(field: string): boolean {
+  return field.endsWith('.FNumber') || field.endsWith('.FName');
+}
+
+function lookupMatchKey(filter: Filter): string {
+  const field = filter.field.trim();
+  if (hasLookupSuffix(field)) {
+    return field;
+  }
+  return filter.operator === 'contains' ? `${field}.FName` : `${field}.FNumber`;
+}
+
+function compileLookup(filter: Filter): string {
+  const field = filter.field.trim();
+  const code = filter.value.trim();
+  const name = filter.valueLabel?.trim() || code;
+  if (filter.operator === 'contains') {
+    const target = hasLookupSuffix(field) ? field : `${field}.FName`;
+    return `${target} like ${quote(`%${name}%`)}`;
+  }
+  const target = hasLookupSuffix(field) ? field : `${field}.FNumber`;
+  const rendered = quote(code);
+  if (filter.operator === 'neq') {
+    return `${target} <> ${rendered}`;
+  }
+  if (filter.operator === 'gt') {
+    return `${target} > ${rendered}`;
+  }
+  if (filter.operator === 'lt') {
+    return `${target} < ${rendered}`;
+  }
+  return `${target} = ${rendered}`;
+}
+
 function dateClause(filter: Filter, today: Date): string {
   const field = filter.field.trim();
   const range = resolveRelativeDate(filter.value as RelativeDate, today);
@@ -238,6 +407,16 @@ export function compileFilter(
   const field = filter.field.trim();
   const mode = filter.valueMode ?? 'literal';
   const value = filter.value.trim();
+  if (mode === 'lookup') {
+    return compileLookup(filter);
+  }
+  if (
+    mode !== 'field' &&
+    isCalendarDate(value) &&
+    filter.operator !== 'contains'
+  ) {
+    return compileCalendarDate(field, filter.operator, value);
+  }
   const rendered = mode === 'field' ? value : quote(value);
   switch (filter.operator) {
     case 'eq':
@@ -341,12 +520,23 @@ function matchesFilter(
   cells: unknown[],
   today: Date,
 ): boolean {
-  const column = filterColumn(dataset, filter.field);
+  const mode = filter.valueMode ?? 'literal';
+  const column = filterColumn(
+    dataset,
+    mode === 'lookup' ? lookupMatchKey(filter) : filter.field,
+  );
   if (column < 0) {
     return false;
   }
   const cell = cellText(cells[column]);
-  if ((filter.valueMode ?? 'literal') === 'relativeDate') {
+  if (mode === 'lookup') {
+    const expected =
+      filter.operator === 'contains'
+        ? filter.valueLabel?.trim() || filter.value.trim()
+        : filter.value.trim();
+    return expected.length > 0 && OPERATORS[filter.operator](cell, expected);
+  }
+  if (mode === 'relativeDate') {
     const range = resolveRelativeDate(filter.value as RelativeDate, today);
     if (filter.operator === 'gt') {
       return cell.trim().slice(0, 10) > range.end;
@@ -359,8 +549,36 @@ function matchesFilter(
     }
     return inDateRange(cell, range);
   }
+  if (
+    mode === 'literal' &&
+    isCalendarDate(filter.value.trim()) &&
+    filter.operator !== 'contains'
+  ) {
+    return matchesCalendar(filter.operator, cell, filter.value.trim());
+  }
   const expected = filterExpected(dataset, filter, cells);
   return expected != null && OPERATORS[filter.operator](cell, expected);
+}
+
+function matchesCalendar(
+  operator: FilterOperator,
+  cell: string,
+  value: string,
+): boolean {
+  const day = cell.trim().slice(0, 10);
+  if (operator === 'gt') {
+    return day > value;
+  }
+  if (operator === 'lt') {
+    return day < value;
+  }
+  if (operator === 'neq') {
+    return day !== value;
+  }
+  if (operator === 'eq') {
+    return day === value;
+  }
+  return false;
 }
 
 function filterColumn(dataset: Dataset, field: string): number {
@@ -382,6 +600,7 @@ function matchedCase(
           operator: item.operator,
           value: item.value,
           valueMode: item.valueMode,
+          valueLabel: item.valueLabel,
         },
         cells,
         today,
@@ -391,14 +610,6 @@ function matchedCase(
     }
   }
   return null;
-}
-
-export function bucketOf(value: string, grain: TimeGrain | null): string {
-  if (!grain) {
-    return value;
-  }
-  const match = /^(\d{4})-(\d{2})/.exec(value.trim());
-  return match ? `${match[1]}-${match[2]}` : value || '（空）';
 }
 
 function filterExpected(
@@ -421,10 +632,19 @@ export function aggregate(
   const grouped = new Map<string, Map<string, number>>();
   const detail: DetailRow[] = [];
   let skipped = 0;
-  const seriesColumn = dataset.series ? 1 : -1;
-  const measureColumn =
-    dataset.aggregation === 'sum' ? (dataset.series ? 2 : 1) : -1;
-  const keys = fieldKeys(dataset).split(',');
+  const keys = fieldKeys(dataset)
+    .split(',')
+    .filter((key) => key.length > 0);
+  const dimensionIndex = dataset.dimension.field.trim()
+    ? keys.indexOf(queryKey(dataset.dimension))
+    : -1;
+  const seriesIndex = dataset.series?.field.trim()
+    ? keys.indexOf(queryKey(dataset.series))
+    : -1;
+  const measureIndex =
+    dataset.aggregation === 'sum' && dataset.measure.field.trim()
+      ? keys.indexOf(queryKey(dataset.measure))
+      : -1;
 
   for (const raw of rawRows) {
     const cells = Array.isArray(raw) ? raw : null;
@@ -446,18 +666,18 @@ export function aggregate(
         }),
       });
     }
-    const contribution =
-      measureColumn < 0 ? 1 : cellNumber(cells[measureColumn]);
+    const contribution = measureIndex < 0 ? 1 : cellNumber(cells[measureIndex]);
     if (contribution == null) {
       skipped += 1;
       continue;
     }
-    const dimension = bucketOf(cellText(cells[0]), dataset.grain) || '（空）';
+    const dimension =
+      dimensionIndex < 0 ? '合计' : cellText(cells[dimensionIndex]) || '（空）';
     const seriesName = dataset.seriesCases.length
       ? (matchedCase(dataset, cells, today) ?? '其他')
-      : seriesColumn < 0
+      : seriesIndex < 0
         ? ''
-        : cellText(cells[seriesColumn]) || '（空）';
+        : cellText(cells[seriesIndex]) || '（空）';
     const bucket = grouped.get(dimension) ?? new Map<string, number>();
     bucket.set(seriesName, (bucket.get(seriesName) ?? 0) + contribution);
     grouped.set(dimension, bucket);
@@ -469,16 +689,11 @@ export function aggregate(
       value: [...bucket.values()].reduce((sum, item) => sum + item, 0),
       series: Object.fromEntries(bucket),
     }))
-    .sort((a, b) =>
-      dataset.grain
-        ? a.dimension.localeCompare(b.dimension)
-        : b.value - a.value,
-    );
-  const truncated = rows.length > dataset.limit;
+    .sort((a, b) => b.value - a.value);
   return {
-    rows: rows.slice(0, dataset.limit),
-    detail: detail.slice(0, dataset.limit),
+    rows,
+    detail,
     skipped,
-    truncated: truncated || detail.length > dataset.limit,
+    truncated: false,
   };
 }

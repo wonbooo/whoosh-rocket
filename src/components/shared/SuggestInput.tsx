@@ -13,6 +13,30 @@ export interface SuggestColors {
   text: string;
 }
 
+function findMatch(
+  options: SuggestOption[],
+  query: string,
+): SuggestOption | null {
+  const trimmed = query.trim().toLowerCase();
+  if (!trimmed) {
+    return null;
+  }
+  const exact = options.find(
+    (option) =>
+      option.value.toLowerCase() === trimmed ||
+      option.label.toLowerCase() === trimmed,
+  );
+  if (exact) {
+    return exact;
+  }
+  const narrowed = options.filter(
+    (option) =>
+      option.label.toLowerCase().includes(trimmed) ||
+      option.value.toLowerCase().includes(trimmed),
+  );
+  return narrowed.length === 1 ? narrowed[0] : null;
+}
+
 export function SuggestInput({
   value,
   options,
@@ -20,6 +44,7 @@ export function SuggestInput({
   colors,
   onChange,
   onPick,
+  onQuery,
 }: {
   value: string;
   options: SuggestOption[];
@@ -27,22 +52,32 @@ export function SuggestInput({
   colors?: SuggestColors;
   onChange: (value: string) => void;
   onPick?: (option: SuggestOption) => void;
+  onQuery?: (query: string) => void;
 }) {
   const listId = useId();
   const container = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
+  const [query, setQuery] = useState<string | null>(null);
 
-  const keyword = value.trim().toLowerCase();
-  const matches = options.filter(
-    (option) =>
-      option.label.toLowerCase().includes(keyword) ||
-      option.value.toLowerCase().includes(keyword),
-  );
+  const matched = options.find((option) => option.value === value);
+  const display = query ?? matched?.label ?? value;
+  const keyword = (query ?? '').trim().toLowerCase();
+  const matches = keyword
+    ? options.filter(
+        (option) =>
+          option.label.toLowerCase().includes(keyword) ||
+          option.value.toLowerCase().includes(keyword),
+      )
+    : options;
+
+  useEffect(() => {
+    setQuery(null);
+  }, [value]);
 
   useEffect(() => {
     setActive(0);
-  }, [value]);
+  }, [query]);
 
   useEffect(() => {
     if (!open) {
@@ -57,10 +92,32 @@ export function SuggestInput({
     return () => document.removeEventListener('mousedown', close);
   }, [open]);
 
-  const pick = (option: SuggestOption) => {
-    onChange(option.value);
-    onPick?.(option);
+  const apply = (next: string, option?: SuggestOption) => {
+    if (next !== value) {
+      onChange(next);
+    }
+    if (option && option.value !== value) {
+      onPick?.(option);
+    }
+    setQuery(null);
     setOpen(false);
+  };
+
+  const pick = (option: SuggestOption) => {
+    apply(option.value, option);
+  };
+
+  const commitQuery = () => {
+    if (query === null) {
+      return;
+    }
+    const trimmed = query.trim();
+    const chosen = findMatch(options, trimmed);
+    if (chosen) {
+      apply(chosen.value, chosen);
+      return;
+    }
+    apply(trimmed);
   };
 
   return (
@@ -70,13 +127,22 @@ export function SuggestInput({
         aria-expanded={open}
         aria-controls={listId}
         aria-autocomplete="list"
-        value={value}
+        value={display}
         placeholder={placeholder}
         onChange={(event) => {
-          onChange(event.target.value);
+          setQuery(event.target.value);
           setOpen(true);
+          onQuery?.(event.target.value);
         }}
-        onFocus={() => setOpen(true)}
+        onFocus={(event) => {
+          setOpen(true);
+          const index = options.findIndex((option) => option.value === value);
+          setActive(index >= 0 ? index : 0);
+          event.currentTarget.select();
+        }}
+        onBlur={() => {
+          commitQuery();
+        }}
         onKeyDown={(event) => {
           if (event.key === 'ArrowDown') {
             event.preventDefault();
@@ -89,6 +155,7 @@ export function SuggestInput({
             event.preventDefault();
             pick(matches[active]);
           } else if (event.key === 'Escape') {
+            setQuery(null);
             setOpen(false);
           }
         }}

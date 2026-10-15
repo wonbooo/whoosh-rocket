@@ -10,13 +10,14 @@ function cases(value: unknown): SeriesCase[] {
 }
 
 export function normalizeDataset(dataset: Dataset): Dataset {
-  return {
+  const normalized = {
     ...dataset,
-    grain: dataset.grain ?? null,
     seriesCases: cases(dataset.seriesCases),
     columns: Array.isArray(dataset.columns) ? dataset.columns : [],
     chartType: dataset.chartType ?? 'bar',
   };
+  delete (normalized as { grain?: unknown }).grain;
+  return normalized;
 }
 
 export function normalizeDashboard(dashboard: Dashboard): Dashboard {

@@ -11,11 +11,16 @@ export interface QueryChartResult extends AggregateResult {
   queryTruncated: boolean;
 }
 
+export const DETAIL_PAGE_SIZE = 50;
+
 export interface QuerySource {
   formId: string;
   fieldKeys: string;
   filterString: string;
   topCount: number;
+  startRow?: number;
+  limit?: number;
+  orderString?: string;
 }
 
 export interface QueryPage {
@@ -32,21 +37,45 @@ export interface MergeSource {
 
 const QUERY_CAP = 2000;
 
+function detailOrder(fieldKeys: string): string {
+  return fieldKeys
+    .split(',')
+    .map((key) => key.trim())
+    .filter((key) => key.length > 0)
+    .map((key) => `${key} ASC`)
+    .join(',');
+}
+
 export async function queryChart(
   dataset: Dataset,
   query: QueryFn,
   today: Date = new Date(),
+  page = 0,
 ): Promise<QueryChartResult> {
-  const page = await query({
-    formId: dataset.formId.trim(),
-    fieldKeys: fieldKeys(dataset),
-    filterString: compileFilters(dataset.filters, today),
-    topCount: QUERY_CAP,
-  });
+  const keys = fieldKeys(dataset);
+  const pageIndex = Number.isInteger(page) && page > 0 ? page : 0;
+  const requested = await query(
+    dataset.columns.length > 0
+      ? {
+          formId: dataset.formId.trim(),
+          fieldKeys: keys,
+          filterString: compileFilters(dataset.filters, today),
+          topCount: 0,
+          startRow: pageIndex * DETAIL_PAGE_SIZE,
+          limit: DETAIL_PAGE_SIZE,
+          orderString: detailOrder(keys),
+        }
+      : {
+          formId: dataset.formId.trim(),
+          fieldKeys: keys,
+          filterString: compileFilters(dataset.filters, today),
+          topCount: QUERY_CAP,
+        },
+  );
   return {
-    ...aggregate(page.rows, dataset, today),
-    fetched: page.rows.length,
-    queryTruncated: page.truncated,
+    ...aggregate(requested.rows, dataset, today),
+    fetched: requested.rows.length,
+    queryTruncated: requested.truncated,
   };
 }
 

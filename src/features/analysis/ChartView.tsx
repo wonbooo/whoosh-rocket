@@ -8,6 +8,7 @@ import {
 } from '@/features/analysis/chartSpec';
 import { chartTheme } from '@/features/analysis/chartTheme';
 import type { AggregatedRow } from '@/features/analysis/model';
+import { DETAIL_PAGE_SIZE } from '@/features/analysis/merge';
 import type { QueryChartResult } from '@/features/analysis/query';
 import type { ChartType, Dataset } from '@/features/analysis/types';
 
@@ -39,6 +40,10 @@ export function ChartView({
   headers,
   palette,
   dark = false,
+  page = 0,
+  hasNext = false,
+  busy = false,
+  onPage,
 }: {
   dataset: Dataset;
   chartType: ChartType;
@@ -46,6 +51,10 @@ export function ChartView({
   headers?: ColumnHeader[];
   palette?: ChartPalette;
   dark?: boolean;
+  page?: number;
+  hasNext?: boolean;
+  busy?: boolean;
+  onPage?: (page: number) => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const total = result.rows.reduce((sum, row) => sum + row.value, 0);
@@ -75,6 +84,7 @@ export function ChartView({
           compact,
           palette,
           chartTheme(dark),
+          dataset.id,
         ),
       );
       void chart.render();
@@ -94,63 +104,91 @@ export function ChartView({
       style={{ color: palette?.text, fontSize: '0.875rem' }}
     >
       {dataset.columns.length > 0 ? (
-        <div className="min-h-0 flex-1 overflow-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr
-                className="border-b text-left text-xs"
-                style={{
-                  borderColor: palette?.grid,
-                  color: palette?.muted,
-                }}
-              >
-                <th
-                  className="sticky top-0 w-12 px-2 py-1.5 text-right font-medium"
-                  style={{ background: palette?.panel ?? '#ffffff' }}
-                >
-                  #
-                </th>
-                {dataset.columns.map((column, index) => (
-                  <th
-                    key={index}
-                    className="sticky top-0 px-2 py-1.5 font-medium"
-                    style={{ background: palette?.panel ?? '#ffffff' }}
-                  >
-                    {headers?.find((header) => header.field === column.field)
-                      ?.label ?? column.field}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {result.detail.map((row, index) => (
+        <>
+          <div className="min-h-0 flex-1 overflow-auto">
+            <table className="w-full text-sm">
+              <thead>
                 <tr
-                  key={index}
-                  className="border-b"
+                  className="border-b text-left text-xs"
                   style={{
                     borderColor: palette?.grid,
-                    background:
-                      index % 2 === 1
-                        ? (palette?.panelAlt ?? '#f4f4f5')
-                        : 'transparent',
+                    color: palette?.muted,
                   }}
                 >
-                  <td
-                    className="px-2 py-1.5 text-right tabular-nums"
-                    style={{ color: palette?.muted }}
+                  <th
+                    className="sticky top-0 w-12 px-2 py-1.5 text-right font-medium"
+                    style={{ background: palette?.panel ?? '#ffffff' }}
                   >
-                    {index + 1}
-                  </td>
-                  {row.cells.map((cell, cellIndex) => (
-                    <td key={cellIndex} className="px-2 py-1.5">
-                      {cell}
-                    </td>
+                    #
+                  </th>
+                  {dataset.columns.map((column, index) => (
+                    <th
+                      key={index}
+                      className="sticky top-0 px-2 py-1.5 font-medium"
+                      style={{ background: palette?.panel ?? '#ffffff' }}
+                    >
+                      {headers?.find((header) => header.field === column.field)
+                        ?.label ?? column.field}
+                    </th>
                   ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {result.detail.map((row, index) => (
+                  <tr
+                    key={index}
+                    className="border-b"
+                    style={{
+                      borderColor: palette?.grid,
+                      background:
+                        index % 2 === 1
+                          ? (palette?.panelAlt ?? '#f4f4f5')
+                          : 'transparent',
+                    }}
+                  >
+                    <td
+                      className="px-2 py-1.5 text-right tabular-nums"
+                      style={{ color: palette?.muted }}
+                    >
+                      {page * DETAIL_PAGE_SIZE + index + 1}
+                    </td>
+                    {row.cells.map((cell, cellIndex) => (
+                      <td key={cellIndex} className="px-2 py-1.5">
+                        {cell}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {onPage ? (
+            <div
+              className="flex shrink-0 items-center justify-end gap-2 border-t px-2 py-1.5"
+              style={{ borderColor: palette?.grid, color: palette?.muted }}
+            >
+              <button
+                type="button"
+                className="rounded-md border px-2 py-1 text-xs disabled:opacity-40"
+                style={{ borderColor: palette?.grid, color: palette?.text }}
+                disabled={page <= 0 || busy}
+                onClick={() => onPage(page - 1)}
+              >
+                上一页
+              </button>
+              <span className="text-xs tabular-nums">第 {page + 1} 页</span>
+              <button
+                type="button"
+                className="rounded-md border px-2 py-1 text-xs disabled:opacity-40"
+                style={{ borderColor: palette?.grid, color: palette?.text }}
+                disabled={!hasNext || busy}
+                onClick={() => onPage(page + 1)}
+              >
+                下一页
+              </button>
+            </div>
+          ) : null}
+        </>
       ) : chartType === 'kpi' ? (
         <div className="flex h-full min-h-16 items-center justify-center">
           <div className="text-[clamp(1rem,6cqh,2.25rem)] font-semibold leading-none tracking-tight">
