@@ -1,6 +1,10 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
-import { createRecord, whenHydrated } from '@/lib/persistedRecord';
+import {
+  createRecord,
+  whenHydrated,
+  whenPersisted,
+} from '@/lib/persistedRecord';
 import { recordStorage } from '@/lib/recordStorage';
 
 export interface KingdeeConnectionSettings {
@@ -14,7 +18,7 @@ interface KingdeeState extends KingdeeConnectionSettings {
   sessionId: string | null;
   userName: string | null;
   orgId: number | null;
-  setSettings: (settings: KingdeeConnectionSettings) => void;
+  setSettings: (settings: KingdeeConnectionSettings) => Promise<void>;
   setSession: (
     sessionId: string,
     userName?: string | null,
@@ -34,8 +38,10 @@ export const useKingdeeStore = create<KingdeeState>()(
       sessionId: null,
       userName: null,
       orgId: null,
-      setSettings: (settings) =>
-        set({ ...settings, sessionId: null, userName: null, orgId: null }),
+      setSettings: (settings) => {
+        set({ ...settings, sessionId: null, userName: null, orgId: null });
+        return whenPersisted('kingdee');
+      },
       setSession: (sessionId, userName = null, orgId = null) =>
         set({ sessionId, userName, orgId }),
       clearSession: () => set({ sessionId: null, userName: null, orgId: null }),
@@ -61,6 +67,10 @@ export const useKingdeeStore = create<KingdeeState>()(
   ),
 );
 
-void whenHydrated('kingdee').then(() => {
-  void useKingdeeStore.persist.rehydrate();
-});
+void whenHydrated('kingdee')
+  .then(() => {
+    void useKingdeeStore.persist.rehydrate();
+  })
+  .catch(() => {
+    // The settings dialog retries the load when it opens.
+  });

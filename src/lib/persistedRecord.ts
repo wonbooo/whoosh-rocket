@@ -2,8 +2,8 @@ import { db } from '@/lib/db';
 
 export interface PersistedRecord {
   get(key: string): string | null;
-  set(key: string, value: string): void;
-  remove(key: string): void;
+  set(key: string, value: string): void | Promise<void>;
+  remove(key: string): void | Promise<void>;
 }
 
 const memory = new Map<string, Map<string, string>>();
@@ -60,22 +60,42 @@ function memoryRecord(namespace: string): PersistedRecord {
 }
 
 const hydrated = new Map<string, Promise<void>>();
+const pendingWrites = new Map<string, Promise<void>>();
+
+function trackWrite(namespace: string, write: Promise<void>): Promise<void> {
+  const previous = (pendingWrites.get(namespace) ?? Promise.resolve()).catch(
+    () => undefined,
+  );
+  const tracked = previous.then(() => write);
+  pendingWrites.set(namespace, tracked);
+  void tracked.then(
+    () => undefined,
+    () => undefined,
+  );
+  return tracked;
+}
+
+export function whenPersisted(namespace: string): Promise<void> {
+  return pendingWrites.get(namespace) ?? Promise.resolve();
+}
 
 export function createRecord(namespace: string): PersistedRecord {
   if (!db.isAvailable()) {
     return memoryRecord(namespace);
   }
   const bucket = memoryNamespace(namespace);
-  void whenHydrated(namespace);
+  void whenHydrated(namespace).catch(() => {
+    // A rejected load is dropped so the next attempt can try again.
+  });
   return {
     get: (key) => bucket.get(key) ?? null,
     set: (key, value) => {
       bucket.set(key, value);
-      void db.put(namespace, key, value);
+      return trackWrite(namespace, db.put(namespace, key, value));
     },
     remove: (key) => {
       bucket.delete(key);
-      void db.delete(namespace, key);
+      return trackWrite(namespace, db.delete(namespace, key));
     },
   };
 }
@@ -86,7 +106,12 @@ export function whenHydrated(namespace: string): Promise<void> {
   }
   let pending = hydrated.get(namespace);
   if (!pending) {
-    pending = hydrate(namespace, memoryNamespace(namespace));
+    pending = hydrate(namespace, memoryNamespace(namespace)).catch(
+      (error: unknown) => {
+        hydrated.delete(namespace);
+        throw error;
+      },
+    );
     hydrated.set(namespace, pending);
   }
   return pending;
@@ -96,13 +121,9 @@ async function hydrate(
   namespace: string,
   bucket: Map<string, string>,
 ): Promise<void> {
-  try {
-    for (const entry of await db.list(namespace)) {
-      if (!bucket.has(entry.key)) {
-        bucket.set(entry.key, entry.value);
-      }
+  for (const entry of await db.list(namespace)) {
+    if (!bucket.has(entry.key)) {
+      bucket.set(entry.key, entry.value);
     }
-  } catch {
-    // The database is unavailable; the in-memory copy keeps working.
   }
 }

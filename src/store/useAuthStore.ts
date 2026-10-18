@@ -29,6 +29,10 @@ export const useAuthStore = create<AuthState>()(
   ),
 );
 
-void whenHydrated('auth').then(() => {
-  void useAuthStore.persist.rehydrate();
-});
+void whenHydrated('auth')
+  .then(() => {
+    void useAuthStore.persist.rehydrate();
+  })
+  .catch(() => {
+    // The next read retries a failed load.
+  });

@@ -9,6 +9,7 @@
       "identifier": "http:default",
       "allow": [{ "url": "https://**" }, { "url": "http://**" }]
     },
-    "allow-license"
+    "allow-license",
+    "allow-db"
   ]
 }

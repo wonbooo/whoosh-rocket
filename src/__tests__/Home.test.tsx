@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
@@ -72,6 +72,34 @@ describe('Home page', () => {
     expect(screen.getByText('委外下单')).toBeInTheDocument();
     expect(screen.getByText('包材下单')).toBeInTheDocument();
     expect(screen.getByText('售后包材下单')).toBeInTheDocument();
+    expect(screen.getByText('供应商评价')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /供应商评价/ })).toHaveAttribute(
+      'href',
+      '/supplier',
+    );
+  });
+
+  it('reloads saved connection settings when the dialog opens again', async () => {
+    const user = userEvent.setup();
+    renderHome();
+    await user.click(screen.getByRole('button', { name: '设置' }));
+    const url = screen.getByLabelText(/金蝶URL/);
+    await waitFor(() => expect(url).toBeEnabled());
+    await user.type(url, 'http://kd.example/k3cloud/');
+    await user.type(screen.getByLabelText(/账套ID/), 'acct-1');
+    await user.type(screen.getByLabelText(/用户名/), 'demo');
+    await user.type(screen.getByLabelText(/密码/), 'secret');
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+    await user.click(screen.getByRole('button', { name: '设置' }));
+    expect(
+      await screen.findByDisplayValue('http://kd.example/k3cloud/'),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/账套ID/)).toHaveValue('acct-1');
+    expect(screen.getByLabelText(/用户名/)).toHaveValue('demo');
+    expect(screen.getByLabelText(/密码/)).toHaveValue('secret');
   });
 
   it('opens settings dialog from the gear button', async () => {

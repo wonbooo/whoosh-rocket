@@ -115,9 +115,13 @@ export const useAnalysisStore = create<AnalysisStore>((set) => ({
     ),
 }));
 
-void whenHydrated('analysis').then(() => {
-  useAnalysisStore.setState({
-    ...loadAnalysisState(),
-    ...loadAnalysisSettings(),
+void whenHydrated('analysis')
+  .then(() => {
+    useAnalysisStore.setState({
+      ...loadAnalysisState(),
+      ...loadAnalysisSettings(),
+    });
+  })
+  .catch(() => {
+    // The next read retries a failed load.
   });
-});

@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
+import { whenHydrated } from '@/lib/persistedRecord';
 import { useKingdeeStore } from '@/store/useKingdeeStore';
 
 const settingsSchema = z.object({
@@ -55,26 +56,48 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
       return;
     }
     let active = true;
-    void Promise.resolve(useKingdeeStore.persist.rehydrate()).then(() => {
-      if (!active) {
-        return;
-      }
-      const stored = useKingdeeStore.getState();
-      reset({
-        serverUrl: stored.serverUrl,
-        acctName: stored.acctName,
-        username: stored.username,
-        password: stored.password,
+    void whenHydrated('kingdee')
+      .then(() => useKingdeeStore.persist.rehydrate())
+      .then(() => {
+        if (!active) {
+          return;
+        }
+        const stored = useKingdeeStore.getState();
+        reset({
+          serverUrl: stored.serverUrl,
+          acctName: stored.acctName,
+          username: stored.username,
+          password: stored.password,
+        });
+        setReady(true);
+      })
+      .catch(() => {
+        if (!active) {
+          return;
+        }
+        setReady(true);
+        toast({
+          title: '未能读取已保存的配置',
+          description: '请重新填写并保存',
+          variant: 'destructive',
+        });
       });
-      setReady(true);
-    });
     return () => {
       active = false;
     };
-  }, [open, reset]);
+  }, [open, reset, toast]);
 
-  const onSubmit = (values: SettingsFormValues) => {
-    setSettings(values);
+  const onSubmit = async (values: SettingsFormValues) => {
+    try {
+      await setSettings(values);
+    } catch (error) {
+      toast({
+        title: '保存失败',
+        description: persistError(error),
+        variant: 'destructive',
+      });
+      return;
+    }
     toast({ title: '已保存', description: '请点击「连接金蝶」登录' });
     onOpenChange(false);
   };
@@ -150,6 +173,16 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
       </DialogContent>
     </Dialog>
   );
+}
+
+function persistError(error: unknown): string {
+  if (typeof error === 'string' && error.trim()) {
+    return error;
+  }
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+  return '配置没有写入本机';
 }
 
 function Field({

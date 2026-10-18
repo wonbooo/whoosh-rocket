@@ -8,6 +8,11 @@ const Analysis = lazy(() =>
     default: module.AnalysisPage,
   })),
 );
+const SupplierEvaluation = lazy(() =>
+  import('@/features/supplier/SupplierEvaluationPage').then((module) => ({
+    default: module.SupplierEvaluationPage,
+  })),
+);
 
 export const router = createBrowserRouter([
   {
@@ -16,6 +21,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <Home /> },
       { path: 'analysis', element: <Analysis /> },
+      { path: 'supplier', element: <SupplierEvaluation /> },
       { path: '*', element: <Navigate to="/" replace /> },
     ],
   },

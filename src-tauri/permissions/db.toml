@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-db"
+description = "Read and write the local configuration database"
+commands.allow = ["db_get", "db_put", "db_delete", "db_list"]

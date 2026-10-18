@@ -1,5 +1,11 @@
 import { useState } from 'react';
-import { Briefcase, FileText, LineChart, Plus } from 'lucide-react';
+import {
+  Briefcase,
+  ClipboardCheck,
+  FileText,
+  LineChart,
+  Plus,
+} from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { AftersaleOrderDialog } from '@/features/aftersale/AftersaleOrderDialog';
 import { PackagingOrderDialog } from '@/features/packaging/PackagingOrderDialog';
@@ -114,6 +120,18 @@ export default function Home() {
           <div className="text-base font-semibold">数据分析</div>
           <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
             按维度汇总金蝶单据并绘图
+          </p>
+        </Link>
+        <Link
+          to="/supplier"
+          className="rounded-xl border border-zinc-200 bg-white p-5 text-left shadow-sm transition-shadow hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:bg-zinc-800"
+        >
+          <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-amber-50 text-amber-600">
+            <ClipboardCheck className="h-5 w-5" />
+          </div>
+          <div className="text-base font-semibold">供应商评价</div>
+          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+            汇总近 6 个月到货合格率
           </p>
         </Link>
       </div>
