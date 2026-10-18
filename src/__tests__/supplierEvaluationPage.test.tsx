@@ -17,16 +17,6 @@ vi.mock('@/features/supplier/load', () => ({
   loadInspectLines: vi.fn(),
 }));
 
-vi.mock('@antv/g2', () => ({
-  Chart: class {
-    options() {}
-    render() {
-      return Promise.resolve();
-    }
-    destroy() {}
-  },
-}));
-
 function sampleLines(months: string[]): InspectLine[] {
   const current = months[months.length - 1] ?? '';
   const oldest = months[0] ?? '';
@@ -81,7 +71,7 @@ afterEach(() => {
     orgId: null,
   });
   localStorage.removeItem('kingdee');
-  localStorage.removeItem('supplier-evaluation-layout');
+  localStorage.removeItem('supplier-evaluation-layout-v2');
   vi.mocked(loadInspectLines).mockReset();
   vi.unstubAllGlobals();
 });
@@ -101,12 +91,18 @@ describe('SupplierEvaluationPage', () => {
   it('asks to connect Kingdee when there is no session', () => {
     render(<SupplierEvaluationPage />);
     expect(
+      screen.getByRole('heading', { name: '到货检验分析' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: '售后质量指标' }),
+    ).toBeInTheDocument();
+    expect(
       screen.getByText('请先点击右上角「连接金蝶」完成登录。'),
     ).toBeInTheDocument();
     expect(loadInspectLines).not.toHaveBeenCalled();
   });
 
-  it('shows the rate table, chart, and supplier detail', async () => {
+  it('shows the rate table and supplier detail', async () => {
     const user = userEvent.setup();
     const months = recentMonths(new Date());
     const current = months[months.length - 1] ?? '';
@@ -116,12 +112,27 @@ describe('SupplierEvaluationPage', () => {
 
     render(<SupplierEvaluationPage />);
 
+    const title = await screen.findByRole('heading', { name: '到货检验分析' });
+    const monthFilter = screen.getByLabelText('年月');
     expect(
-      await screen.findByRole('heading', { name: '近6个月供应商到货合格率' }),
+      monthFilter.compareDocumentPosition(title) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(monthFilter).toHaveValue(current);
+    expect(
+      within(
+        screen
+          .getByRole('heading', { name: '到货质检明细' })
+          .closest('section') as HTMLElement,
+      ).queryByPlaceholderText('搜索供应商'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('售后月份')).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: '近6个月供应商到货合格率' }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('heading', { name: '分组柱状图' }),
-    ).toBeInTheDocument();
+      screen.queryByRole('heading', { name: '近6个月到货合格率' }),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByRole('heading', { name: '到货质检明细' }),
     ).toBeInTheDocument();
@@ -143,11 +154,13 @@ describe('SupplierEvaluationPage', () => {
       )?.rate ?? null,
     );
     expect(screen.getAllByText(rateCell).length).toBeGreaterThan(0);
+    await user.selectOptions(monthFilter, '');
     expect(screen.getAllByText('—').length).toBeGreaterThan(0);
-    expect(screen.getByTestId('supplier-rate-chart')).toBeInTheDocument();
+    await user.selectOptions(monthFilter, current);
 
-    const overallText = `当月综合到货合格率 ${formatRate(monthOverallRate(lines, current))}`;
-    expect(screen.getByText(overallText)).toBeInTheDocument();
+    const overallText = formatRate(monthOverallRate(lines, current));
+    expect(screen.getByTestId('overall-rate')).toHaveTextContent(overallText);
+    expect(screen.getByTestId('overall-rate')).toHaveClass('text-red-600');
     expect(screen.queryByText('请选择供应商')).not.toBeInTheDocument();
     expect(screen.getByText('螺丝')).toBeInTheDocument();
     expect(screen.getByText('垫片')).toBeInTheDocument();
@@ -160,9 +173,15 @@ describe('SupplierEvaluationPage', () => {
     ).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '甲供' }));
 
-    const supplierOverall = `当月综合到货合格率 ${formatRate(monthOverallRate(lines, current, '甲供'))}`;
-    expect(screen.getByText(supplierOverall)).toBeInTheDocument();
-    expect(screen.queryByText(overallText)).not.toBeInTheDocument();
+    const supplierOverall = formatRate(
+      monthOverallRate(lines, current, '甲供'),
+    );
+    expect(screen.getByTestId('overall-rate')).toHaveTextContent(
+      supplierOverall,
+    );
+    expect(screen.getByTestId('overall-rate')).not.toHaveTextContent(
+      overallText,
+    );
     const detail = productDetails(lines, '甲供', current);
     expect(detail.length).toBeGreaterThan(0);
     for (const row of detail) {
@@ -205,6 +224,7 @@ describe('SupplierEvaluationPage', () => {
     expect(within(detail).getByText('商品01')).toBeInTheDocument();
     expect(within(detail).queryByText('商品21')).not.toBeInTheDocument();
     expect(within(summary).getByText('共 21 条')).toBeInTheDocument();
+    expect(screen.getByTestId('overall-rate')).toHaveClass('text-green-600');
     expect(within(detail).getByText('共 21 条')).toBeInTheDocument();
 
     await user.click(within(summary).getByRole('button', { name: '下一页' }));
