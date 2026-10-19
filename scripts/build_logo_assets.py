@@ -23,9 +23,11 @@ def detail_dir() -> str:
 
 def knock_out(image: Image.Image) -> Image.Image:
     rgba = np.array(image.convert("RGBA"))
-    rgb = rgba[:, :, :3]
-    dark = rgb.max(axis=2) <= 28
-    labeled, _ = ndimage.label(dark)
+    rgb = rgba[:, :, :3].astype(np.int16)
+    brightness = rgb.max(axis=2)
+    saturation = brightness - rgb.min(axis=2)
+    neutral_dark = (brightness <= 52) & (saturation <= 24)
+    labeled, _ = ndimage.label(neutral_dark)
     border = np.unique(
         np.concatenate(
             [
@@ -37,13 +39,47 @@ def knock_out(image: Image.Image) -> Image.Image:
         )
     )
     background = np.isin(labeled, border[border != 0])
-    brightness = rgb.max(axis=2).astype(np.int16)
-    edge = ndimage.binary_dilation(background) & ~background & (brightness <= 70)
+
+    holes = (brightness <= 14) & ~background
+    hole_labels, hole_count = ndimage.label(holes)
+    for label in range(1, hole_count + 1):
+        region = hole_labels == label
+        if int(region.sum()) >= 60:
+            background |= region
+
+    fringe = ndimage.binary_dilation(background, iterations=2) & ~background
+    background |= fringe & (brightness <= 72) & (saturation <= 28)
+
     alpha = np.full(background.shape, 255, dtype=np.uint8)
     alpha[background] = 0
-    alpha[edge] = np.clip((brightness[edge] - 28) * 255 // 42, 0, 255).astype(np.uint8)
+    crumbs = (alpha > 0) & (brightness <= 40) & (saturation <= 16)
+    crumb_labels, crumb_count = ndimage.label(crumbs)
+    for label in range(1, crumb_count + 1):
+        region = crumb_labels == label
+        if int(region.sum()) < 40:
+            alpha[region] = 0
     rgba[:, :, 3] = alpha
     return Image.fromarray(rgba)
+
+
+def resize_alpha(image: Image.Image, size: tuple[int, int]) -> Image.Image:
+    source = np.array(image.convert("RGBA")).astype(np.float32)
+    color = source[:, :, :3] * (source[:, :, 3:4] / 255)
+    premul = Image.fromarray(np.dstack([color, source[:, :, 3]]).astype(np.uint8), "RGBA")
+    resized = np.array(premul.resize(size, Image.Resampling.LANCZOS)).astype(np.float32)
+    alpha = resized[:, :, 3:4]
+    visible = alpha[:, :, 0] > 8
+    resized[:, :, :3][visible] = np.clip(
+        resized[:, :, :3][visible] * 255 / alpha[:, :, 0][visible][:, None],
+        0,
+        255,
+    )
+    resized[:, :, 3][~visible] = 0
+    brightness = resized[:, :, :3].max(axis=2)
+    saturation = brightness - resized[:, :, :3].min(axis=2)
+    fringe = (resized[:, :, 3] < 230) & (brightness <= 96) & (saturation <= 32)
+    resized[:, :, 3][fringe] = 0
+    return knock_out(Image.fromarray(resized.astype(np.uint8), "RGBA"))
 
 
 def content_box(path: str) -> tuple[int, int, int, int]:
@@ -88,7 +124,8 @@ def main() -> None:
     os.makedirs(LOGO_DIR, exist_ok=True)
     salute_box = content_box(salute)
     rest = knock_out(Image.open(salute).crop(salute_box))
-    rest.thumbnail((720, 1200), Image.Resampling.LANCZOS)
+    scale = min(720 / rest.width, 1200 / rest.height, 1)
+    rest = resize_alpha(rest, (round(rest.width * scale), round(rest.height * scale)))
     rest.save(os.path.join(LOGO_DIR, "rest.png"), optimize=True)
     print("rest", rest.size)
 
@@ -96,7 +133,7 @@ def main() -> None:
     icon = Image.new("RGBA", (side, side), (0, 0, 0, 0))
     pose = knock_out(Image.open(salute).crop(salute_box))
     icon.paste(pose, ((side - pose.width) // 2, (side - pose.height) // 2), pose)
-    icon = icon.resize((1024, 1024), Image.Resampling.LANCZOS)
+    icon = resize_alpha(icon, (1024, 1024))
     icon.save(os.path.join(PUBLIC, "icon.png"), optimize=True)
     print("icon", icon.size)
 
@@ -106,6 +143,9 @@ def main() -> None:
         if name.endswith(".mp4") and "方案" in name
     )
     target = os.path.join(LOGO_DIR, "sequence.mp4")
+    if os.path.exists(target):
+        print("video kept", os.path.getsize(target))
+        return
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
     subprocess.check_call(
         [
