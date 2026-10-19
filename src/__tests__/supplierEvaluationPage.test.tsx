@@ -10,11 +10,16 @@ import {
   type InspectLine,
 } from '@/features/supplier/aggregate';
 import { loadInspectLines } from '@/features/supplier/load';
+import { loadArrivalSources } from '@/features/supplier/loadTimeliness';
 import { SupplierEvaluationPage } from '@/features/supplier/SupplierEvaluationPage';
 import { useKingdeeStore } from '@/store/useKingdeeStore';
 
 vi.mock('@/features/supplier/load', () => ({
   loadInspectLines: vi.fn(),
+}));
+
+vi.mock('@/features/supplier/loadTimeliness', () => ({
+  loadArrivalSources: vi.fn(),
 }));
 
 function sampleLines(months: string[]): InspectLine[] {
@@ -72,11 +77,18 @@ afterEach(() => {
   });
   localStorage.removeItem('kingdee');
   localStorage.removeItem('supplier-evaluation-layout-v2');
+  localStorage.removeItem('supplier-timeliness-layout');
   vi.mocked(loadInspectLines).mockReset();
+  vi.mocked(loadArrivalSources).mockReset();
   vi.unstubAllGlobals();
 });
 
 beforeEach(() => {
+  vi.mocked(loadArrivalSources).mockResolvedValue({
+    lines: [],
+    receive: [],
+    instock: [],
+  });
   vi.stubGlobal(
     'ResizeObserver',
     class {
@@ -97,9 +109,13 @@ describe('SupplierEvaluationPage', () => {
       screen.getByRole('heading', { name: '售后质量指标' }),
     ).toBeInTheDocument();
     expect(
+      screen.getByRole('heading', { name: '到货及时率' }),
+    ).toBeInTheDocument();
+    expect(
       screen.getByText('请先点击右上角「连接金蝶」完成登录。'),
     ).toBeInTheDocument();
     expect(loadInspectLines).not.toHaveBeenCalled();
+    expect(loadArrivalSources).not.toHaveBeenCalled();
   });
 
   it('shows the rate table and supplier detail', async () => {
@@ -112,6 +128,9 @@ describe('SupplierEvaluationPage', () => {
 
     render(<SupplierEvaluationPage />);
 
+    expect(
+      await screen.findByText('近 6 个月没有已审核的采购订单。'),
+    ).toBeInTheDocument();
     const title = await screen.findByRole('heading', { name: '到货检验分析' });
     const monthFilter = screen.getByLabelText('年月');
     expect(
@@ -209,6 +228,9 @@ describe('SupplierEvaluationPage', () => {
 
     render(<SupplierEvaluationPage />);
 
+    expect(
+      await screen.findByText('近 6 个月没有已审核的采购订单。'),
+    ).toBeInTheDocument();
     const summary = (
       await screen.findByRole('heading', { name: '近6个月供应商到货合格率' })
     ).closest('section');

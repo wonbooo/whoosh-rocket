@@ -241,17 +241,13 @@ function workbookBytes(rows: unknown[][], extraSheet = true): Uint8Array {
 }
 
 function fileFrom(bytes: Uint8Array, name: string): File {
-  const file = new File([bytes], name, {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  const file = new File([buffer], name, {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   });
   Object.defineProperty(file, 'arrayBuffer', {
-    value: () =>
-      Promise.resolve(
-        bytes.buffer.slice(
-          bytes.byteOffset,
-          bytes.byteOffset + bytes.byteLength,
-        ),
-      ),
+    value: () => Promise.resolve(buffer),
   });
   return file;
 }

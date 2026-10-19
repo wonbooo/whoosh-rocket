@@ -12,6 +12,7 @@ import {
 import { AftersaleQualityPanel } from '@/features/supplier/AftersaleQualityPanel';
 import { DashboardGrid } from '@/features/supplier/DashboardGrid';
 import { loadInspectLines } from '@/features/supplier/load';
+import { TimelinessPanel } from '@/features/supplier/TimelinessPanel';
 import { SuggestInput } from '@/components/shared/SuggestInput';
 import { useKingdeeStore } from '@/store/useKingdeeStore';
 
@@ -63,6 +64,7 @@ export function SupplierEvaluationPage() {
   const [month, setMonth] = useState(() => months[months.length - 1] ?? '');
   const [aftersaleSuppliers, setAftersaleSuppliers] = useState<string[]>([]);
   const [aftersaleMonths, setAftersaleMonths] = useState<string[]>([]);
+  const [arrivalSuppliers, setArrivalSuppliers] = useState<string[]>([]);
   const handleCatalog = useCallback(
     (catalog: { suppliers: string[]; months: string[] }) => {
       setAftersaleSuppliers((current) =>
@@ -74,6 +76,11 @@ export function SupplierEvaluationPage() {
     },
     [],
   );
+  const handleArrivalCatalog = useCallback((suppliers: string[]) => {
+    setArrivalSuppliers((current) =>
+      sameNames(current, suppliers) ? current : suppliers,
+    );
+  }, []);
 
   useEffect(() => {
     if (!sessionId) {
@@ -114,13 +121,14 @@ export function SupplierEvaluationPage() {
       ...new Set([
         ...(lines ? supplierNames(lines) : []),
         ...aftersaleSuppliers,
+        ...arrivalSuppliers,
       ]),
     ].sort((left, right) => left.localeCompare(right, 'zh'));
     return [
       { value: '', label: '全部' },
       ...names.map((name) => ({ value: name, label: name })),
     ];
-  }, [aftersaleSuppliers, lines]);
+  }, [aftersaleSuppliers, arrivalSuppliers, lines]);
   const monthOptions = useMemo(
     () => [...new Set([...months, ...aftersaleMonths])].sort(),
     [aftersaleMonths, months],
@@ -193,6 +201,14 @@ export function SupplierEvaluationPage() {
           render={renderBody}
         />
       ) : null}
+      <TimelinessPanel
+        sessionId={sessionId}
+        supplier={supplier}
+        month={month}
+        months={months}
+        today={today}
+        onCatalog={handleArrivalCatalog}
+      />
       <AftersaleQualityPanel
         supplier={supplier}
         month={month}

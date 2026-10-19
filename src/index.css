@@ -60,3 +60,28 @@
     @apply bg-background text-foreground antialiased;
   }
 }
+
+.logo-mark {
+  position: relative;
+  display: inline-block;
+  height: 3.25rem;
+  aspect-ratio: 1097 / 2074;
+  flex-shrink: 0;
+}
+
+.logo-mark img,
+.logo-mark canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.logo-mark video {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}

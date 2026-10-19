@@ -6,6 +6,7 @@ import {
   formatLoginSuccessToast,
   loginByPassword,
 } from '@/apis/kingdee/client';
+import { LogoMark } from '@/components/shared/LogoMark';
 import { SettingsDialog } from '@/components/shared/SettingsDialog';
 import { Button } from '@/components/ui/button';
 import { LicenseImportPage } from '@/features/license/LicenseImportPage';
@@ -79,7 +80,7 @@ export function Header() {
           to="/"
           className="flex items-center gap-2 text-[15px] font-semibold tracking-tight"
         >
-          <img src="/icon.png" alt="" className="h-7 w-7 rounded-sm" />
+          <LogoMark />
           咻咻小火箭
         </Link>
         <div className="flex items-center gap-3">

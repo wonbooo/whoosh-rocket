@@ -131,7 +131,7 @@ export default function Home() {
           </div>
           <div className="text-base font-semibold">供应商评价</div>
           <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-            汇总近 6 个月到货合格率
+            汇总近 6 个月到货合格率、到货及时率和售后客诉
           </p>
         </Link>
       </div>
