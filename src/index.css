@@ -64,24 +64,30 @@
 .logo-mark {
   position: relative;
   display: inline-block;
-  height: 3.25rem;
-  aspect-ratio: 1097 / 2074;
+  width: 3rem;
+  height: 3rem;
   flex-shrink: 0;
+  line-height: 0;
+  overflow: hidden;
 }
 
-.logo-mark img,
-.logo-mark canvas {
-  position: absolute;
-  inset: 0;
+.logo-mark-svg,
+.logo-mark svg {
+  display: block;
   width: 100%;
   height: 100%;
-  object-fit: contain;
 }
 
-.logo-mark video {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
+.logo-mark svg {
+  overflow: hidden;
+}
+
+.logo-mark.rest .L {
+  animation-play-state: paused;
+  animation-delay: -5s;
+}
+
+.logo-mark.play .L {
+  animation-iteration-count: 1;
+  animation-play-state: running;
 }
