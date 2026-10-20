@@ -4,34 +4,60 @@ use chrono::{Local, NaiveDate};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-  tauri::Builder::default()
-    .plugin(tauri_plugin_http::init())
-    .setup(|app| {
-      let path = store::database_path(&app.path().app_data_dir().map_err(|err| err.to_string())?);
-      app.manage(Db(Mutex::new(store::Store::open(&path)?)));
-      if cfg!(debug_assertions) {
-        app.handle().plugin(
-          tauri_plugin_log::Builder::default()
-            .level(log::LevelFilter::Info)
-            .build(),
-        )?;
-      }
-      Ok(())
-    })
-    .invoke_handler(tauri::generate_handler![
-      get_machine_id,
-      get_license_status,
-      import_license,
-      issue_license,
-      db_get,
-      db_put,
-      db_delete,
-      db_list,
-    ])
-    .run(tauri::generate_context!())
-    .expect("error while running tauri application");
+    tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if !args.iter().any(|arg| arg == "--desktop-only") {
+                desktop_icon::show_main(app);
+            }
+        }))
+        .plugin(tauri_plugin_http::init())
+        .on_menu_event(|app, event| {
+            desktop_icon::handle_menu(app, &event.id().0);
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                match window.label() {
+                    "main" => {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                    "desktop-icon" => api.prevent_close(),
+                    _ => {}
+                }
+            }
+        })
+        .setup(|app| {
+            let path =
+                store::database_path(&app.path().app_data_dir().map_err(|err| err.to_string())?);
+            app.manage(Db(Mutex::new(store::Store::open(&path)?)));
+            if cfg!(debug_assertions) {
+                app.handle().plugin(
+                    tauri_plugin_log::Builder::default()
+                        .level(log::LevelFilter::Info)
+                        .build(),
+                )?;
+            }
+            desktop_icon::install(app)?;
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            get_machine_id,
+            get_license_status,
+            import_license,
+            issue_license,
+            db_get,
+            db_put,
+            db_delete,
+            db_list,
+            desktop_icon::desktop_icon_nudge,
+            desktop_icon::desktop_icon_open,
+            desktop_icon::desktop_icon_menu,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }
 
+mod desktop_icon;
 mod license;
 mod license_keys;
 mod store;
@@ -41,70 +67,70 @@ use tauri::Manager;
 struct Db(Mutex<store::Store>);
 
 fn with_db<T>(
-  app: &tauri::AppHandle,
-  body: impl FnOnce(&store::Store) -> Result<T, String>,
+    app: &tauri::AppHandle,
+    body: impl FnOnce(&store::Store) -> Result<T, String>,
 ) -> Result<T, String> {
-  let state = app.state::<Db>();
-  let guard = state.0.lock().map_err(|err| err.to_string())?;
-  body(&guard)
+    let state = app.state::<Db>();
+    let guard = state.0.lock().map_err(|err| err.to_string())?;
+    body(&guard)
 }
 
 #[tauri::command]
 fn db_get(app: tauri::AppHandle, namespace: String, key: String) -> Result<Option<String>, String> {
-  require_license(&app)?;
-  with_db(&app, |store| store.get(&namespace, &key))
+    require_license(&app)?;
+    with_db(&app, |store| store.get(&namespace, &key))
 }
 
 #[tauri::command]
 fn db_put(
-  app: tauri::AppHandle,
-  namespace: String,
-  key: String,
-  value: String,
+    app: tauri::AppHandle,
+    namespace: String,
+    key: String,
+    value: String,
 ) -> Result<(), String> {
-  require_license(&app)?;
-  with_db(&app, |store| store.put(&namespace, &key, &value))
+    require_license(&app)?;
+    with_db(&app, |store| store.put(&namespace, &key, &value))
 }
 
 #[tauri::command]
 fn db_delete(app: tauri::AppHandle, namespace: String, key: String) -> Result<(), String> {
-  require_license(&app)?;
-  with_db(&app, |store| store.delete(&namespace, &key))
+    require_license(&app)?;
+    with_db(&app, |store| store.delete(&namespace, &key))
 }
 
 #[tauri::command]
 fn db_list(app: tauri::AppHandle, namespace: String) -> Result<Vec<(String, String)>, String> {
-  require_license(&app)?;
-  with_db(&app, |store| store.namespace_entries(&namespace))
+    require_license(&app)?;
+    with_db(&app, |store| store.namespace_entries(&namespace))
 }
 
 fn app_license_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-  let dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
-  Ok(dir.join("license.lic"))
+    let dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
+    Ok(dir.join("license.lic"))
 }
 
 fn require_license(app: &tauri::AppHandle) -> Result<(), String> {
-  let machine_id = license::machine_id().map_err(|err| err.to_string())?;
-  let text = current_license(app)?.ok_or_else(|| license::LicenseError::Missing.to_string())?;
-  license::validate_license(&text, &machine_id, trusted_today(app)?)
-    .map(|_| ())
-    .map_err(|err| err.to_string())
+    let machine_id = license::machine_id().map_err(|err| err.to_string())?;
+    let text = current_license(app)?.ok_or_else(|| license::LicenseError::Missing.to_string())?;
+    license::validate_license(&text, &machine_id, trusted_today(app)?)
+        .map(|_| ())
+        .map_err(|err| err.to_string())
 }
 
 /// The date license checks use, taken from NTP. A reading stays trusted for six
 /// hours so brief outages still work; past that it is refreshed. With no
 /// reading at all the check fails rather than trusting the system clock.
 fn trusted_today(app: &tauri::AppHandle) -> Result<NaiveDate, String> {
-  let cached = cached_network_time(app);
-  if cached.is_some_and(|(fetched_at, _)| network_time_is_fresh(fetched_at)) {
-    return Ok(license::effective_today(cached));
-  }
-  if let Some(fetched_at) = license::fetch_network_time() {
-    let fetched_on = fetched_at.date_naive();
-    store_network_time(app, fetched_at, fetched_on);
-    return Ok(license::effective_today(Some((fetched_at, fetched_on))));
-  }
-  Err(license::LicenseError::Offline.to_string())
+    let cached = cached_network_time(app);
+    if cached.is_some_and(|(fetched_at, _)| network_time_is_fresh(fetched_at)) {
+        return Ok(license::effective_today(cached));
+    }
+    if let Some(fetched_at) = license::fetch_network_time() {
+        let fetched_on = fetched_at.date_naive();
+        store_network_time(app, fetched_at, fetched_on);
+        return Ok(license::effective_today(Some((fetched_at, fetched_on))));
+    }
+    Err(license::LicenseError::Offline.to_string())
 }
 
 const TIME_NAMESPACE: &str = "license";
@@ -115,106 +141,113 @@ const IMPORT_ATTEMPTS_KEY: &str = "importAttempts";
 /// A cached network time is reusable while the local clock says it was fetched
 /// within the last six hours and not in the future.
 fn network_time_is_fresh(fetched_at: chrono::DateTime<chrono::Utc>) -> bool {
-  let age = Local::now().naive_utc() - fetched_at.naive_utc();
-  age >= chrono::TimeDelta::zero() && age <= chrono::TimeDelta::seconds(6 * 60 * 60)
+    let age = Local::now().naive_utc() - fetched_at.naive_utc();
+    age >= chrono::TimeDelta::zero() && age <= chrono::TimeDelta::seconds(6 * 60 * 60)
 }
 
 fn cached_network_time(
-  app: &tauri::AppHandle,
+    app: &tauri::AppHandle,
 ) -> Option<(chrono::DateTime<chrono::Utc>, NaiveDate)> {
-  let at = with_db(app, |store| store.get(TIME_NAMESPACE, TIME_FETCHED_AT)).ok()??;
-  let on = with_db(app, |store| store.get(TIME_NAMESPACE, TIME_FETCHED_ON)).ok()??;
-  let fetched_at = chrono::DateTime::parse_from_rfc3339(&at).ok()?.to_utc();
-  let fetched_on = NaiveDate::parse_from_str(&on, "%Y-%m-%d").ok()?;
-  Some((fetched_at, fetched_on))
+    let at = with_db(app, |store| store.get(TIME_NAMESPACE, TIME_FETCHED_AT)).ok()??;
+    let on = with_db(app, |store| store.get(TIME_NAMESPACE, TIME_FETCHED_ON)).ok()??;
+    let fetched_at = chrono::DateTime::parse_from_rfc3339(&at).ok()?.to_utc();
+    let fetched_on = NaiveDate::parse_from_str(&on, "%Y-%m-%d").ok()?;
+    Some((fetched_at, fetched_on))
 }
 
 fn store_network_time(
-  app: &tauri::AppHandle,
-  fetched_at: chrono::DateTime<chrono::Utc>,
-  fetched_on: NaiveDate,
+    app: &tauri::AppHandle,
+    fetched_at: chrono::DateTime<chrono::Utc>,
+    fetched_on: NaiveDate,
 ) {
-  let at = fetched_at.to_rfc3339();
-  let on = fetched_on.format("%Y-%m-%d").to_string();
-  let _ = with_db(app, |store| store.put(TIME_NAMESPACE, TIME_FETCHED_AT, &at));
-  let _ = with_db(app, |store| store.put(TIME_NAMESPACE, TIME_FETCHED_ON, &on));
+    let at = fetched_at.to_rfc3339();
+    let on = fetched_on.format("%Y-%m-%d").to_string();
+    let _ = with_db(app, |store| store.put(TIME_NAMESPACE, TIME_FETCHED_AT, &at));
+    let _ = with_db(app, |store| store.put(TIME_NAMESPACE, TIME_FETCHED_ON, &on));
 }
 
 fn current_license(app: &tauri::AppHandle) -> Result<Option<String>, String> {
-  let stored = with_db(app, |store| {
-    store.get(license::LICENSE_NAMESPACE, license::LICENSE_KEY)
-  })?;
-  if stored.is_some() {
-    return Ok(stored);
-  }
-  let path = app_license_path(app)?;
-  let legacy = std::fs::read_to_string(&path).ok();
-  if let Some(text) = legacy.as_deref() {
-    with_db(app, |store| {
-      store.put(license::LICENSE_NAMESPACE, license::LICENSE_KEY, text.trim())
+    let stored = with_db(app, |store| {
+        store.get(license::LICENSE_NAMESPACE, license::LICENSE_KEY)
     })?;
-    std::fs::remove_file(&path).ok();
-  }
-  Ok(legacy)
+    if stored.is_some() {
+        return Ok(stored);
+    }
+    let path = app_license_path(app)?;
+    let legacy = std::fs::read_to_string(&path).ok();
+    if let Some(text) = legacy.as_deref() {
+        with_db(app, |store| {
+            store.put(
+                license::LICENSE_NAMESPACE,
+                license::LICENSE_KEY,
+                text.trim(),
+            )
+        })?;
+        std::fs::remove_file(&path).ok();
+    }
+    Ok(legacy)
 }
 
 #[tauri::command]
 fn get_machine_id() -> Result<String, String> {
-  license::machine_id().map_err(|err| err.to_string())
+    license::machine_id().map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 fn get_license_status(app: tauri::AppHandle) -> Result<license::LicenseStatus, String> {
-  let machine_id = license::machine_id().map_err(|err| err.to_string())?;
-  let text = current_license(&app)?;
-  let key = license::verifying_key().map_err(|err| err.to_string())?;
-  Ok(license::status_from_text(
-    text.as_deref(),
-    &machine_id,
-    trusted_today(&app)?,
-    &key,
-  ))
+    let machine_id = license::machine_id().map_err(|err| err.to_string())?;
+    let text = current_license(&app)?;
+    let key = license::verifying_key().map_err(|err| err.to_string())?;
+    Ok(license::status_from_text(
+        text.as_deref(),
+        &machine_id,
+        trusted_today(&app)?,
+        &key,
+    ))
 }
 
 #[tauri::command]
-fn import_license(app: tauri::AppHandle, content: String) -> Result<license::LicenseStatus, String> {
-  let machine_id = license::machine_id().map_err(|err| err.to_string())?;
-  let today = trusted_today(&app)?;
-  let attempts = import_attempts(&app)?;
-  if license::attempts_for_today(attempts.as_deref(), today) >= license::IMPORT_ATTEMPT_LIMIT {
-    return Err(license::LicenseError::Locked.to_string());
-  }
-  if let Err(err) = license::validate_license(&content, &machine_id, today) {
-    let (_, stored) = license::record_attempt(attempts.as_deref(), today);
+fn import_license(
+    app: tauri::AppHandle,
+    content: String,
+) -> Result<license::LicenseStatus, String> {
+    let machine_id = license::machine_id().map_err(|err| err.to_string())?;
+    let today = trusted_today(&app)?;
+    let attempts = import_attempts(&app)?;
+    if license::attempts_for_today(attempts.as_deref(), today) >= license::IMPORT_ATTEMPT_LIMIT {
+        return Err(license::LicenseError::Locked.to_string());
+    }
+    if let Err(err) = license::validate_license(&content, &machine_id, today) {
+        let (_, stored) = license::record_attempt(attempts.as_deref(), today);
+        let _ = with_db(&app, |store| {
+            store.put(license::LICENSE_NAMESPACE, IMPORT_ATTEMPTS_KEY, &stored)
+        });
+        return Err(err.to_string());
+    }
     let _ = with_db(&app, |store| {
-      store.put(license::LICENSE_NAMESPACE, IMPORT_ATTEMPTS_KEY, &stored)
+        store.delete(license::LICENSE_NAMESPACE, IMPORT_ATTEMPTS_KEY)
     });
-    return Err(err.to_string());
-  }
-  let _ = with_db(&app, |store| {
-    store.delete(license::LICENSE_NAMESPACE, IMPORT_ATTEMPTS_KEY)
-  });
-  let text = content.trim().to_string();
-  with_db(&app, |store| {
-    store.put(license::LICENSE_NAMESPACE, license::LICENSE_KEY, &text)
-  })?;
-  let key = license::verifying_key().map_err(|err| err.to_string())?;
-  Ok(license::status_from_text(
-    Some(&text),
-    &machine_id,
-    today,
-    &key,
-  ))
+    let text = content.trim().to_string();
+    with_db(&app, |store| {
+        store.put(license::LICENSE_NAMESPACE, license::LICENSE_KEY, &text)
+    })?;
+    let key = license::verifying_key().map_err(|err| err.to_string())?;
+    Ok(license::status_from_text(
+        Some(&text),
+        &machine_id,
+        today,
+        &key,
+    ))
 }
 
 fn import_attempts(app: &tauri::AppHandle) -> Result<Option<String>, String> {
-  with_db(app, |store| {
-    store.get(license::LICENSE_NAMESPACE, IMPORT_ATTEMPTS_KEY)
-  })
+    with_db(app, |store| {
+        store.get(license::LICENSE_NAMESPACE, IMPORT_ATTEMPTS_KEY)
+    })
 }
 
 #[tauri::command]
 fn issue_license(password: String, machine_id: String) -> Result<String, String> {
-  license::issue_license_text(&password, &machine_id, license::today())
-    .map_err(|err| err.to_string())
+    license::issue_license_text(&password, &machine_id, license::today())
+        .map_err(|err| err.to_string())
 }

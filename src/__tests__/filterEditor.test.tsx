@@ -103,4 +103,30 @@ describe('filter value control', () => {
     ).toBeInTheDocument();
     expect(searchLookup).toHaveBeenCalledWith('BD_Supplier', '甲');
   });
+
+  it('offers 不包含 next to 包含 for text and lookup fields', async () => {
+    const user = userEvent.setup();
+    render(
+      <Harness
+        initial={[{ field: 'FBillNo', operator: 'contains', value: 'PO' }]}
+        fields={[
+          {
+            key: 'FBillNo',
+            name: '单据编号',
+            entity: '',
+            kind: 'text',
+            lookupFormId: null,
+            options: [],
+          },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByRole('combobox', { name: '比较符' }));
+    expect(screen.getByRole('button', { name: '包含' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '不包含' }));
+    expect(screen.getByRole('combobox', { name: '比较符' })).toHaveTextContent(
+      '不包含',
+    );
+  });
 });

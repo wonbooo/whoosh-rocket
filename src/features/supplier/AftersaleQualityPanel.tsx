@@ -15,6 +15,11 @@ import {
   ComplaintBars,
   FactoryPayPie,
 } from '@/features/supplier/AftersaleCharts';
+import {
+  matchSupplier,
+  monthInRange,
+  type SupplierMatch,
+} from '@/features/supplier/aggregate';
 import { DashboardGrid } from '@/features/supplier/DashboardGrid';
 import { db } from '@/lib/db';
 import { createRecord, whenHydrated } from '@/lib/persistedRecord';
@@ -124,13 +129,17 @@ function errorMessage(error: unknown): string {
 export function AftersaleQualityPanel({
   record = defaultRecord,
   supplier = '',
-  month = '',
+  supplierOp = 'eq',
+  monthFrom = '',
+  monthTo = '',
   onMonth,
   onCatalog,
 }: {
   record?: PersistedRecord;
   supplier?: string;
-  month?: string;
+  supplierOp?: SupplierMatch;
+  monthFrom?: string;
+  monthTo?: string;
   onMonth?: (month: string) => void;
   onCatalog?: (catalog: { suppliers: string[]; months: string[] }) => void;
 }) {
@@ -182,10 +191,10 @@ export function AftersaleQualityPanel({
   const events = useMemo(
     () =>
       months
-        .filter((item) => !month || item.month === month)
+        .filter((item) => monthInRange(item.month, monthFrom, monthTo))
         .flatMap((item) => item.events)
-        .filter((event) => !supplier || event.supplier === supplier),
-    [month, months, supplier],
+        .filter((event) => matchSupplier(event.supplier, supplier, supplierOp)),
+    [monthFrom, monthTo, months, supplier, supplierOp],
   );
   const rows = useMemo(() => supplierSummaries(events), [events]);
   const slices = useMemo(() => factoryPaySlices(rows), [rows]);

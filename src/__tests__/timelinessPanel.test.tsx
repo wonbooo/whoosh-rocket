@@ -99,7 +99,8 @@ describe('TimelinessPanel', () => {
       <TimelinessPanel
         sessionId="session-1"
         supplier=""
-        month="2026-10"
+        monthFrom="2026-10"
+        monthTo="2026-10"
         months={months}
         today={new Date(2026, 9, 18)}
         onCatalog={onCatalog}

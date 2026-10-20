@@ -2,6 +2,7 @@ import type {
   ChartType,
   Dashboard,
   Dataset,
+  SavedBoardTemplate,
   FieldDisplay,
   FieldRef,
   Filter,
@@ -10,7 +11,7 @@ import type {
   Widget,
 } from '@/features/analysis/types';
 
-type FieldSpec = readonly [string, FieldDisplay];
+type FieldSpec = readonly [string, FieldDisplay, boolean?];
 
 interface DatasetSpec {
   name: string;
@@ -73,8 +74,12 @@ function relative(
   return { field, operator, value, valueMode: 'relativeDate' };
 }
 
-function ref([field, display]: FieldSpec): FieldRef {
-  return { field, display };
+function ref([field, display, sum]: FieldSpec): FieldRef {
+  return sum ? { field, display, sum: true } : { field, display };
+}
+
+function qty(field: string): FieldSpec {
+  return [field, 'value', true];
 }
 
 function dataset(spec: DatasetSpec, templateId: string): Dataset {
@@ -95,12 +100,27 @@ function dataset(spec: DatasetSpec, templateId: string): Dataset {
   };
 }
 
-const ORDER_DETAIL: FieldSpec[] = [
+const ORDER_IDENTITY: FieldSpec[] = [
   ['FBillNo', 'value'],
   ['FSupplierId', 'name'],
   ['FMaterialId', 'name'],
   ['FDeliveryDate', 'value'],
-  ['FQty', 'value'],
+];
+
+const INBOUND_DETAIL: FieldSpec[] = [
+  ...ORDER_IDENTITY,
+  qty('FQty'),
+  qty('FStockInQty'),
+  qty('FRemainStockINQty'),
+];
+
+const MONTH_DETAIL: FieldSpec[] = [...ORDER_IDENTITY, qty('FQty')];
+
+const RECEIVE_DETAIL: FieldSpec[] = [
+  ...ORDER_IDENTITY,
+  qty('FQty'),
+  qty('FReceiveQty'),
+  qty('FStockInQty'),
 ];
 
 const purchaseInbound: DatasetSpec[] = [
@@ -169,7 +189,7 @@ const purchaseInbound: DatasetSpec[] = [
     formId: 'PUR_PurchaseOrder',
     dimension: ['FMaterialId', 'name'],
     aggregation: 'count',
-    columns: ORDER_DETAIL,
+    columns: INBOUND_DETAIL,
     filters: [
       APPROVED,
       NOT_FROZEN,
@@ -185,7 +205,7 @@ const purchaseInbound: DatasetSpec[] = [
     formId: 'PUR_PurchaseOrder',
     dimension: ['FMaterialId', 'name'],
     aggregation: 'count',
-    columns: ORDER_DETAIL,
+    columns: INBOUND_DETAIL,
     filters: [...OPEN_ORDER, relative('FDeliveryDate', 'today', 'lt')],
     limit: 20,
     chartType: 'kpi',
@@ -196,7 +216,7 @@ const purchaseInbound: DatasetSpec[] = [
     formId: 'PUR_PurchaseOrder',
     dimension: ['FMaterialId', 'name'],
     aggregation: 'count',
-    columns: ORDER_DETAIL,
+    columns: INBOUND_DETAIL,
     filters: [
       ...OPEN_ORDER,
       { field: 'FReceiveQty', operator: 'gt', value: '0' },
@@ -217,7 +237,7 @@ const purchaseInbound: DatasetSpec[] = [
     formId: 'PUR_PurchaseOrder',
     dimension: ['FMaterialId', 'name'],
     aggregation: 'count',
-    columns: ORDER_DETAIL,
+    columns: MONTH_DETAIL,
     filters: [
       APPROVED,
       NOT_FROZEN,
@@ -233,11 +253,7 @@ const purchaseInbound: DatasetSpec[] = [
     formId: 'PUR_PurchaseOrder',
     dimension: ['FBillNo', 'value'],
     aggregation: 'count',
-    columns: [
-      ...ORDER_DETAIL,
-      ['FReceiveQty', 'value'],
-      ['FStockInQty', 'value'],
-    ],
+    columns: RECEIVE_DETAIL,
     filters: [APPROVED],
     limit: 50,
     chartType: 'bar',
@@ -343,6 +359,7 @@ const AMOUNT_SOURCES = ['采购金额·入库', '采购金额·退料'];
 
 export function instantiateTemplate(
   template: BoardTemplate,
+  dashboardName = template.name,
 ): InstantiatedBoard {
   const { datasets } = template.build();
   const byName = new Map(datasets.map((item) => [item.name, item.id]));
@@ -371,13 +388,56 @@ export function instantiateTemplate(
       layout: { x, y, w: width, h: height },
     };
   });
+  const dashboardId = crypto.randomUUID();
+  const idMap = new Map(
+    datasets.map((dataset) => [dataset.id, crypto.randomUUID()]),
+  );
+  return {
+    datasets: datasets.map((dataset) => ({
+      ...dataset,
+      id: idMap.get(dataset.id) ?? crypto.randomUUID(),
+      dashboardId,
+    })),
+    dashboard: {
+      id: dashboardId,
+      name: dashboardName.trim() || template.name,
+      filters: [],
+      widgets: widgets.map((widget) => ({
+        ...widget,
+        datasetId: idMap.get(widget.datasetId) ?? widget.datasetId,
+        sources: widget.sources.map((source) => idMap.get(source) ?? source),
+      })),
+    },
+  };
+}
+
+export function instantiateSavedTemplate(
+  template: SavedBoardTemplate,
+  dashboardName: string,
+): InstantiatedBoard {
+  const dashboardId = crypto.randomUUID();
+  const idMap = new Map(
+    template.datasets.map((dataset) => [dataset.id, crypto.randomUUID()]),
+  );
+  const datasets = template.datasets.map((dataset) => ({
+    ...dataset,
+    id: idMap.get(dataset.id) ?? crypto.randomUUID(),
+    dashboardId,
+    origin: { templateId: template.id },
+  }));
   return {
     datasets,
     dashboard: {
-      id: crypto.randomUUID(),
-      name: template.name,
-      filters: [],
-      widgets,
+      id: dashboardId,
+      name: dashboardName.trim(),
+      filters: template.filters.map((filter) => ({ ...filter })),
+      widgets: template.widgets.map((widget) => ({
+        ...widget,
+        id: crypto.randomUUID(),
+        datasetId: idMap.get(widget.datasetId) ?? widget.datasetId,
+        sources: widget.sources.map((source) => idMap.get(source) ?? source),
+        layout: { ...widget.layout },
+      })),
     },
   };
 }

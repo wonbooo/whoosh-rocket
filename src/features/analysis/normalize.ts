@@ -1,6 +1,8 @@
 import type {
   Dashboard,
   Dataset,
+  FieldRef,
+  SavedBoardTemplate,
   SeriesCase,
   Widget,
 } from '@/features/analysis/types';
@@ -9,11 +11,28 @@ function cases(value: unknown): SeriesCase[] {
   return Array.isArray(value) ? (value as SeriesCase[]) : [];
 }
 
+function normalizeField(field: FieldRef): FieldRef {
+  if (field.groupByMonth === true) {
+    return field;
+  }
+  if (!('groupByMonth' in field)) {
+    return field;
+  }
+  const next = { ...field };
+  delete next.groupByMonth;
+  return next;
+}
+
 export function normalizeDataset(dataset: Dataset): Dataset {
   const normalized = {
     ...dataset,
+    dimension: normalizeField(dataset.dimension),
+    series: dataset.series ? normalizeField(dataset.series) : null,
+    measure: normalizeField(dataset.measure),
     seriesCases: cases(dataset.seriesCases),
-    columns: Array.isArray(dataset.columns) ? dataset.columns : [],
+    columns: Array.isArray(dataset.columns)
+      ? dataset.columns.map(normalizeField)
+      : [],
     chartType: dataset.chartType ?? 'bar',
   };
   delete (normalized as { grain?: unknown }).grain;
@@ -32,5 +51,28 @@ function normalizeWidget(widget: Widget): Widget {
   return {
     ...widget,
     sources: Array.isArray(widget.sources) ? widget.sources : [],
+  };
+}
+
+export function normalizeSavedTemplate(
+  value: unknown,
+): SavedBoardTemplate | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const item = value as Partial<SavedBoardTemplate>;
+  if (typeof item.id !== 'string' || typeof item.name !== 'string') {
+    return null;
+  }
+  return {
+    id: item.id,
+    name: item.name,
+    datasets: Array.isArray(item.datasets)
+      ? item.datasets.map((dataset) => normalizeDataset(dataset))
+      : [],
+    filters: Array.isArray(item.filters) ? item.filters : [],
+    widgets: Array.isArray(item.widgets)
+      ? item.widgets.map((widget) => normalizeWidget(widget))
+      : [],
   };
 }

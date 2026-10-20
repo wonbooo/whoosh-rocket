@@ -7,8 +7,8 @@ import {
   legendLabel,
 } from '@/features/analysis/chartSpec';
 import { chartTheme } from '@/features/analysis/chartTheme';
-import type { AggregatedRow } from '@/features/analysis/model';
-import { DETAIL_PAGE_SIZE } from '@/features/analysis/merge';
+import { cellNumber, type AggregatedRow } from '@/features/analysis/model';
+import { DETAIL_PAGE_SIZE, DETAIL_PAGE_SIZES } from '@/features/analysis/merge';
 import type { QueryChartResult } from '@/features/analysis/query';
 import type { ChartType, Dataset } from '@/features/analysis/types';
 
@@ -20,6 +20,13 @@ export interface ColumnHeader {
 const numberFormat = new Intl.NumberFormat('zh-CN', {
   maximumFractionDigits: 2,
 });
+
+function columnSum(rows: { cells: string[] }[], index: number): number {
+  return rows.reduce(
+    (sum, row) => sum + (cellNumber(row.cells[index]) ?? 0),
+    0,
+  );
+}
 
 function seriesNames(rows: AggregatedRow[]): string[] {
   const names = new Set<string>();
@@ -41,9 +48,11 @@ export function ChartView({
   palette,
   dark = false,
   page = 0,
+  pageSize = DETAIL_PAGE_SIZE,
   hasNext = false,
   busy = false,
   onPage,
+  onPageSize,
 }: {
   dataset: Dataset;
   chartType: ChartType;
@@ -52,9 +61,11 @@ export function ChartView({
   palette?: ChartPalette;
   dark?: boolean;
   page?: number;
+  pageSize?: number;
   hasNext?: boolean;
   busy?: boolean;
   onPage?: (page: number) => void;
+  onPageSize?: (pageSize: number) => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const total = result.rows.reduce((sum, row) => sum + row.value, 0);
@@ -150,7 +161,7 @@ export function ChartView({
                       className="px-2 py-1.5 text-right tabular-nums"
                       style={{ color: palette?.muted }}
                     >
-                      {page * DETAIL_PAGE_SIZE + index + 1}
+                      {page * pageSize + index + 1}
                     </td>
                     {row.cells.map((cell, cellIndex) => (
                       <td key={cellIndex} className="px-2 py-1.5">
@@ -160,6 +171,35 @@ export function ChartView({
                   </tr>
                 ))}
               </tbody>
+              {dataset.columns.some((column) => column.sum) ? (
+                <tfoot>
+                  <tr
+                    className="border-t font-medium"
+                    style={{ borderColor: palette?.grid }}
+                  >
+                    <td
+                      className="sticky bottom-0 px-2 py-1.5 text-right"
+                      style={{
+                        background: palette?.panel ?? '#ffffff',
+                        color: palette?.muted,
+                      }}
+                    >
+                      {page > 0 || hasNext ? '本页合计' : '合计'}
+                    </td>
+                    {dataset.columns.map((column, index) => (
+                      <td
+                        key={index}
+                        className="sticky bottom-0 px-2 py-1.5 tabular-nums"
+                        style={{ background: palette?.panel ?? '#ffffff' }}
+                      >
+                        {column.sum
+                          ? numberFormat.format(columnSum(result.detail, index))
+                          : ''}
+                      </td>
+                    ))}
+                  </tr>
+                </tfoot>
+              ) : null}
             </table>
           </div>
           {onPage ? (
@@ -167,6 +207,29 @@ export function ChartView({
               className="flex shrink-0 items-center justify-end gap-2 border-t px-2 py-1.5"
               style={{ borderColor: palette?.grid, color: palette?.muted }}
             >
+              {onPageSize ? (
+                <label className="mr-auto flex items-center gap-1 text-xs">
+                  每页
+                  <select
+                    aria-label="分页大小"
+                    className="rounded-md border bg-transparent px-1 py-0.5 text-xs"
+                    style={{
+                      borderColor: palette?.grid,
+                      color: palette?.text,
+                      background: palette?.panel ?? '#ffffff',
+                    }}
+                    value={pageSize}
+                    disabled={busy}
+                    onChange={(event) => onPageSize(Number(event.target.value))}
+                  >
+                    {DETAIL_PAGE_SIZES.map((size) => (
+                      <option key={size} value={size}>
+                        {size}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
               <button
                 type="button"
                 className="rounded-md border px-2 py-1 text-xs disabled:opacity-40"

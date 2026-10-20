@@ -132,12 +132,25 @@ describe('SupplierEvaluationPage', () => {
       await screen.findByText('近 6 个月没有已审核的采购订单。'),
     ).toBeInTheDocument();
     const title = await screen.findByRole('heading', { name: '到货检验分析' });
-    const monthFilter = screen.getByLabelText('年月');
+    const monthFrom = screen.getByRole('combobox', { name: '开始年月' });
+    const monthTo = screen.getByRole('combobox', { name: '结束年月' });
     expect(
-      monthFilter.compareDocumentPosition(title) &
+      monthFrom.compareDocumentPosition(title) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-    expect(monthFilter).toHaveValue(current);
+    expect(monthFrom).toHaveTextContent('选择年月');
+    expect(monthTo).toHaveTextContent('选择年月');
+    expect(monthFrom).not.toHaveTextContent(current);
+    expect(
+      screen.getByRole('combobox', { name: '供应商比较' }),
+    ).toHaveTextContent('等于');
+    expect(screen.getByText('过滤条件')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: '添加条件' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: '移除' }),
+    ).not.toBeInTheDocument();
     expect(
       within(
         screen
@@ -173,28 +186,31 @@ describe('SupplierEvaluationPage', () => {
       )?.rate ?? null,
     );
     expect(screen.getAllByText(rateCell).length).toBeGreaterThan(0);
-    await user.selectOptions(monthFilter, '');
-    expect(screen.getAllByText('—').length).toBeGreaterThan(0);
-    await user.selectOptions(monthFilter, current);
+    const summary = screen
+      .getByRole('heading', { name: '近6个月供应商到货合格率' })
+      .closest('section') as HTMLElement;
+    expect(within(summary).getByText(months[0] ?? '')).toBeInTheDocument();
 
-    const overallText = formatRate(monthOverallRate(lines, current));
+    const overallText = formatRate(monthOverallRate(lines, ''));
     expect(screen.getByTestId('overall-rate')).toHaveTextContent(overallText);
     expect(screen.getByTestId('overall-rate')).toHaveClass('text-red-600');
     expect(screen.queryByText('请选择供应商')).not.toBeInTheDocument();
-    expect(screen.getByText('螺丝')).toBeInTheDocument();
+    expect(screen.getAllByText('螺丝').length).toBeGreaterThan(0);
     expect(screen.getByText('垫片')).toBeInTheDocument();
 
     const supplierFilter = screen.getByPlaceholderText('搜索供应商');
+    expect(supplierFilter).toHaveValue('');
     await user.click(supplierFilter);
+    expect(
+      screen.queryByRole('button', { name: '全部' }),
+    ).not.toBeInTheDocument();
     await user.keyboard('甲');
     expect(
       screen.queryByRole('button', { name: '乙供' }),
     ).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '甲供' }));
 
-    const supplierOverall = formatRate(
-      monthOverallRate(lines, current, '甲供'),
-    );
+    const supplierOverall = formatRate(monthOverallRate(lines, '', '甲供'));
     expect(screen.getByTestId('overall-rate')).toHaveTextContent(
       supplierOverall,
     );
@@ -204,10 +220,40 @@ describe('SupplierEvaluationPage', () => {
     const detail = productDetails(lines, '甲供', current);
     expect(detail.length).toBeGreaterThan(0);
     for (const row of detail) {
-      expect(screen.getByText(row.materialName)).toBeInTheDocument();
+      expect(screen.getAllByText(row.materialName).length).toBeGreaterThan(0);
       expect(screen.getByText(row.reasonSummary)).toBeInTheDocument();
     }
     expect(screen.queryByText('垫片')).not.toBeInTheDocument();
+    expect(within(summary).getByText(months[0] ?? '')).toBeInTheDocument();
+
+    const oldest = months[0] ?? '';
+    await user.click(monthTo);
+    await user.click(screen.getByRole('button', { name: current }));
+    await user.click(monthFrom);
+    if (oldest.slice(0, 4) !== current.slice(0, 4)) {
+      await user.click(screen.getByRole('button', { name: '上一年' }));
+    }
+    await user.click(screen.getByRole('button', { name: oldest }));
+    expect(
+      within(
+        screen
+          .getByRole('heading', { name: '到货质检明细' })
+          .closest('section') as HTMLElement,
+      ).getByRole('columnheader', { name: '月份' }),
+    ).toBeInTheDocument();
+    expect(within(summary).getByText(current)).toBeInTheDocument();
+
+    await user.click(monthTo);
+    if (oldest.slice(0, 4) !== current.slice(0, 4)) {
+      await user.click(screen.getByRole('button', { name: '上一年' }));
+    }
+    expect(screen.getByRole('button', { name: oldest })).toBeDisabled();
+    await user.keyboard('{Escape}');
+    await user.click(monthFrom);
+    if (oldest.slice(0, 4) !== current.slice(0, 4)) {
+      await user.click(screen.getByRole('button', { name: '下一年' }));
+    }
+    expect(screen.getByRole('button', { name: current })).toBeDisabled();
   });
 
   it('pages the summary and detail tables', async () => {

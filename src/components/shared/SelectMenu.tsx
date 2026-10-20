@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, X } from 'lucide-react';
 import type {
   SuggestColors,
   SuggestOption,
@@ -13,6 +13,7 @@ export function SelectMenu({
   className,
   'aria-label': ariaLabel,
   onChange,
+  onRemove,
 }: {
   value: string;
   options: SuggestOption[];
@@ -21,6 +22,7 @@ export function SelectMenu({
   className?: string;
   'aria-label'?: string;
   onChange: (value: string) => void;
+  onRemove?: (value: string) => void;
 }) {
   const listId = useId();
   const container = useRef<HTMLDivElement>(null);
@@ -43,6 +45,10 @@ export function SelectMenu({
     document.addEventListener('mousedown', close);
     return () => document.removeEventListener('mousedown', close);
   }, [open, selected]);
+
+  useEffect(() => {
+    setActive((current) => Math.min(current, Math.max(options.length - 1, 0)));
+  }, [options.length]);
 
   const pick = (option: SuggestOption) => {
     onChange(option.value);
@@ -94,18 +100,20 @@ export function SelectMenu({
             <li
               key={option.value}
               role="option"
+              aria-label={option.label}
               aria-selected={option.value === value}
+              className="flex items-center"
+              style={{
+                background:
+                  index === active
+                    ? (colors?.panelAlt ?? '#f4f4f5')
+                    : 'transparent',
+              }}
+              onMouseEnter={() => setActive(index)}
             >
               <button
                 type="button"
-                className="block w-full truncate px-3 py-1.5 text-left"
-                style={{
-                  background:
-                    index === active
-                      ? (colors?.panelAlt ?? '#f4f4f5')
-                      : 'transparent',
-                }}
-                onMouseEnter={() => setActive(index)}
+                className="block min-w-0 flex-1 truncate px-3 py-1.5 text-left"
                 onMouseDown={(event) => {
                   event.preventDefault();
                   pick(option);
@@ -113,6 +121,20 @@ export function SelectMenu({
               >
                 {option.label}
               </button>
+              {onRemove ? (
+                <button
+                  type="button"
+                  aria-label={`删除 ${option.label}`}
+                  className="mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onRemove(option.value);
+                  }}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
             </li>
           ))}
         </ul>

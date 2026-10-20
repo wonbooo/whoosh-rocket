@@ -37,6 +37,56 @@ function formatDay(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
+export function orderedMonthRange(
+  from: string,
+  to: string,
+): { start: string; end: string } {
+  if (!from) {
+    return { start: to, end: to };
+  }
+  if (!to) {
+    return { start: from, end: from };
+  }
+  return from <= to ? { start: from, end: to } : { start: to, end: from };
+}
+
+export type SupplierMatch = 'eq' | 'neq' | 'contains' | 'notContains';
+
+export function matchSupplier(
+  name: string,
+  query: string,
+  operator: SupplierMatch = 'eq',
+): boolean {
+  const value = query.trim();
+  if (!value) {
+    return true;
+  }
+  if (operator === 'eq') {
+    return name === value;
+  }
+  if (operator === 'neq') {
+    return name !== value;
+  }
+  if (operator === 'contains') {
+    return name.includes(value);
+  }
+  return !name.includes(value);
+}
+
+export function monthInRange(month: string, from: string, to: string): boolean {
+  if (!from && !to) {
+    return true;
+  }
+  const { start, end } = orderedMonthRange(from, to);
+  if (start && month < start) {
+    return false;
+  }
+  if (end && month > end) {
+    return false;
+  }
+  return true;
+}
+
 export function recentMonths(today: Date, count = 6): string[] {
   const months: string[] = [];
   for (let offset = count - 1; offset >= 0; offset -= 1) {

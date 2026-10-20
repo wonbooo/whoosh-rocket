@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-desktop-icon"
+description = "Move the animated desktop icon and open or quit the app from it"
+commands.allow = ["desktop_icon_nudge", "desktop_icon_open", "desktop_icon_menu"]

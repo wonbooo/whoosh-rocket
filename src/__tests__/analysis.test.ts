@@ -442,6 +442,22 @@ describe('query compilation', () => {
         valueMode: 'lookup',
       }),
     ).toBe("FSupplierId.FName like '%甲%'");
+    expect(
+      compileFilter({
+        field: 'FSupplierId',
+        operator: 'notContains',
+        value: 'VEN001',
+        valueLabel: '甲供应商',
+        valueMode: 'lookup',
+      }),
+    ).toBe("FSupplierId.FName not like '%甲供应商%'");
+    expect(
+      compileFilter({
+        field: 'FBillNo',
+        operator: 'notContains',
+        value: "A'1",
+      }),
+    ).toBe("FBillNo not like '%A''1%'");
   });
 
   it('accepts a calendar date for greater-than and still rejects text', () => {
@@ -704,6 +720,38 @@ describe('aggregation', () => {
     ]);
   });
 
+  it('groups a date dimension and series by month when asked', () => {
+    const result = aggregate(
+      [
+        ['2026-08-15T00:00:00', '2026-07-02', 5],
+        ['2026-08-30', '2026-07-18', 7],
+        ['2026-09-01', '2026-07-02', 1],
+      ],
+      dataset({
+        dimension: { field: 'FDate', display: 'value', groupByMonth: true },
+        series: {
+          field: 'FDeliveryDate',
+          display: 'value',
+          groupByMonth: true,
+        },
+        aggregation: 'sum',
+        measure: { field: 'FQty', display: 'value' },
+      }),
+    );
+    expect(result.rows).toEqual([
+      {
+        dimension: '2026-08',
+        value: 12,
+        series: { '2026-07': 12 },
+      },
+      {
+        dimension: '2026-09',
+        value: 1,
+        series: { '2026-07': 1 },
+      },
+    ]);
+  });
+
   it('keeps each date when an older dataset still asks to group by month', () => {
     const result = aggregate(
       [
@@ -778,6 +826,24 @@ describe('aggregation', () => {
     expect(result.detail).toEqual([
       { cells: ['PO001', '10'] },
       { cells: ['PO002', '4'] },
+    ]);
+  });
+
+  it('drops rows whose text contains the excluded value', () => {
+    const result = aggregate(
+      [
+        ['甲公司', 10],
+        ['乙公司', 4],
+        ['甲乙', 1],
+      ],
+      dataset({
+        filters: [
+          { field: 'FCustId.FName', operator: 'notContains', value: '甲' },
+        ],
+      }),
+    );
+    expect(result.rows).toEqual([
+      { dimension: '乙公司', value: 4, series: { '': 4 } },
     ]);
   });
 });
@@ -1096,6 +1162,7 @@ describe('analysis storage', () => {
     expect(loadAnalysisState(memoryRecord())).toEqual({
       datasets: [],
       dashboards: [],
+      savedTemplates: [],
     });
   });
 
@@ -1103,7 +1170,11 @@ describe('analysis storage', () => {
     const record = memoryRecord();
     record.set('datasets', '{not json');
     record.set('dashboards', '"a string"');
-    expect(loadAnalysisState(record)).toEqual({ datasets: [], dashboards: [] });
+    expect(loadAnalysisState(record)).toEqual({
+      datasets: [],
+      dashboards: [],
+      savedTemplates: [],
+    });
   });
 
   it('remembers the chosen theme and falls back when it is unknown', () => {
@@ -1113,6 +1184,16 @@ describe('analysis storage', () => {
     expect(loadAnalysisSettings(record).themeId).toBe('dark');
     record.set('theme', 'no-such-theme');
     expect(loadAnalysisSettings(record).themeId).toBe('default');
+    expect(loadAnalysisSettings(record).hiddenTemplateIds).toEqual([]);
+    saveAnalysisSettings(
+      { themeId: 'dark', hiddenTemplateIds: ['purchase-inbound'] },
+      record,
+    );
+    expect(loadAnalysisSettings(record).hiddenTemplateIds).toEqual([
+      'purchase-inbound',
+    ]);
+    record.set('hiddenTemplates', '{not json');
+    expect(loadAnalysisSettings(record).hiddenTemplateIds).toEqual([]);
     expect(findTheme('no-such-theme').id).toBe('default');
   });
 });
@@ -1290,13 +1371,35 @@ describe('query execution', () => {
         fieldKeys: 'FBillNo',
         filterString: '',
         topCount: 0,
-        startRow: 50,
-        limit: 50,
+        startRow: 20,
+        limit: 20,
         orderString: 'FBillNo ASC',
       },
     ]);
     expect(result.detail).toHaveLength(50);
     expect(result.queryTruncated).toBe(true);
+  });
+
+  it('uses the chosen detail page size', async () => {
+    const seen: unknown[] = [];
+    await queryChart(
+      dataset({
+        dimension: { field: '', display: 'name' },
+        measure: { field: '', display: 'value' },
+        aggregation: 'count',
+        columns: [{ field: 'FBillNo', display: 'value' }],
+      }),
+      async (params) => {
+        seen.push(params);
+        return { rows: [], truncated: false };
+      },
+      new Date(),
+      2,
+      100,
+    );
+    expect(seen).toEqual([
+      expect.objectContaining({ startRow: 200, limit: 100 }),
+    ]);
   });
 
   it('compiles the query and reports truncation', async () => {
@@ -1569,6 +1672,34 @@ describe('board templates', () => {
       field: 'FBillNo',
       display: 'value',
     });
+    expect(detail?.columns).toEqual([
+      { field: 'FBillNo', display: 'value' },
+      { field: 'FSupplierId', display: 'name' },
+      { field: 'FMaterialId', display: 'name' },
+      { field: 'FDeliveryDate', display: 'value' },
+      { field: 'FQty', display: 'value', sum: true },
+      { field: 'FStockInQty', display: 'value', sum: true },
+      { field: 'FRemainStockINQty', display: 'value', sum: true },
+    ]);
+    for (const name of ['逾期订单数明细', '收料待入库订单明细']) {
+      expect(
+        board.datasets.find((item) => item.name === name)?.columns,
+      ).toEqual(detail?.columns);
+    }
+    expect(
+      board.datasets.find((item) => item.name === '本月采购明细')?.columns,
+    ).toContainEqual({ field: 'FQty', display: 'value', sum: true });
+    expect(
+      board.datasets.find((item) => item.name === '订单收料明细')?.columns,
+    ).toEqual([
+      { field: 'FBillNo', display: 'value' },
+      { field: 'FSupplierId', display: 'name' },
+      { field: 'FMaterialId', display: 'name' },
+      { field: 'FDeliveryDate', display: 'value' },
+      { field: 'FQty', display: 'value', sum: true },
+      { field: 'FReceiveQty', display: 'value', sum: true },
+      { field: 'FStockInQty', display: 'value', sum: true },
+    ]);
 
     const orderAmount = board.datasets.find(
       (item) => item.name === '采购金额·订单',
@@ -1608,38 +1739,121 @@ describe('board templates', () => {
     }
   });
 
-  it('reuses the same datasets and makes a new board each time', () => {
+  it('copies datasets for each board created from the template', () => {
     const first = instantiateTemplate(template!);
     const second = instantiateTemplate(template!);
-    expect(first.datasets.map((item) => item.id)).toEqual(
+    expect(first.datasets.map((item) => item.id)).not.toEqual(
       second.datasets.map((item) => item.id),
+    );
+    expect(new Set(first.datasets.map((item) => item.dashboardId))).toEqual(
+      new Set([first.dashboard.id]),
     );
     expect(
       first.datasets.every((item) => item.origin?.templateId === template!.id),
     ).toBe(true);
     expect(first.dashboard.id).not.toBe(second.dashboard.id);
-    expect(first.dashboard.widgets.map((item) => item.id)).not.toEqual(
-      second.dashboard.widgets.map((item) => item.id),
-    );
 
     useAnalysisStore.setState({
       datasets: [],
       dashboards: [],
+      savedTemplates: [],
       themeId: 'default',
     });
     useAnalysisStore.getState().applyTemplate(first);
     useAnalysisStore.getState().applyTemplate(second);
     const state = useAnalysisStore.getState();
-    expect(state.datasets).toHaveLength(first.datasets.length);
+    expect(state.datasets).toHaveLength(first.datasets.length * 2);
     expect(state.dashboards).toHaveLength(2);
-    const shared = new Set(state.datasets.map((item) => item.id));
-    for (const board of state.dashboards) {
-      for (const widget of board.widgets) {
-        expect(shared.has(widget.datasetId)).toBe(true);
-      }
+    const firstIds = new Set(first.datasets.map((item) => item.id));
+    for (const widget of state.dashboards[0]?.widgets ?? []) {
+      expect(firstIds.has(widget.datasetId)).toBe(true);
     }
+    for (const widget of state.dashboards[1]?.widgets ?? []) {
+      expect(firstIds.has(widget.datasetId)).toBe(false);
+    }
+
+    useAnalysisStore.getState().deleteDashboard(first.dashboard.id);
+    const after = useAnalysisStore.getState();
+    expect(after.dashboards.map((item) => item.id)).toEqual([
+      second.dashboard.id,
+    ]);
+    expect(after.datasets.map((item) => item.id).sort()).toEqual(
+      second.datasets.map((item) => item.id).sort(),
+    );
+  });
+
+  it('physically deletes a template and its unowned datasets', () => {
+    useAnalysisStore.setState({
+      datasets: [
+        {
+          ...firstDataset(),
+          id: 'template:custom:共用',
+          origin: { templateId: 'custom' },
+        },
+        {
+          ...firstDataset(),
+          id: 'owned',
+          dashboardId: 'board-1',
+          origin: { templateId: 'custom' },
+        },
+      ],
+      dashboards: [
+        {
+          id: 'board-1',
+          name: '经营看板',
+          filters: [],
+          widgets: [
+            {
+              id: 'widget-1',
+              title: '图',
+              datasetId: 'owned',
+              chartType: 'bar',
+              sources: [],
+              layout: { x: 0, y: 0, w: 6, h: 8 },
+            },
+          ],
+        },
+      ],
+      savedTemplates: [
+        {
+          id: 'custom',
+          name: '自定义',
+          datasets: [
+            {
+              ...firstDataset(),
+              id: 'inside',
+            },
+          ],
+          filters: [],
+          widgets: [],
+        },
+      ],
+      themeId: 'default',
+    });
+
+    useAnalysisStore.getState().deleteTemplate('custom');
+    const state = useAnalysisStore.getState();
+    expect(state.savedTemplates).toEqual([]);
+    expect(state.datasets.map((item) => item.id)).toEqual(['owned']);
   });
 });
+
+function firstDataset(): Dataset {
+  return {
+    id: 'ds',
+    name: '数据集',
+    formId: 'PUR_PurchaseOrder',
+    dimension: { field: 'FMaterialId', display: 'name' },
+    series: null,
+    seriesCases: [],
+    measure: { field: '', display: 'value' },
+    aggregation: 'count',
+    columns: [],
+    filters: [],
+    limit: 20,
+    chartType: 'bar',
+  };
+}
 
 function widget(id: string, x: number, y: number, w = 6, h = 8): Widget {
   return {

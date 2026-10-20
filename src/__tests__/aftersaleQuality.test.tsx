@@ -530,7 +530,12 @@ function MonthHost({ record }: { record: PersistedRecord }) {
         <option value="2026-09">2026-09</option>
         <option value="2026-10">2026-10</option>
       </select>
-      <AftersaleQualityPanel record={record} month={month} onMonth={setMonth} />
+      <AftersaleQualityPanel
+        record={record}
+        monthFrom={month}
+        monthTo={month}
+        onMonth={setMonth}
+      />
     </>
   );
 }

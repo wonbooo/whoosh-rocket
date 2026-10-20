@@ -1,6 +1,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { AnalysisPage } from '@/features/analysis/AnalysisPage';
+import { DatasetEditor } from '@/features/analysis/AnalysisPage';
+import { findTheme } from '@/features/analysis/themes';
 import type { FieldCatalog } from '@/features/analysis/catalog';
 import { beginCatalogLoad, runQuery } from '@/features/analysis/query';
 import { useAnalysisStore } from '@/features/analysis/store';
@@ -43,6 +44,14 @@ const catalog: FieldCatalog = {
       lookupFormId: null,
       options: [],
     },
+    {
+      key: 'FDate',
+      name: '日期',
+      entity: '',
+      kind: 'date',
+      lookupFormId: null,
+      options: [],
+    },
   ],
 };
 
@@ -66,8 +75,20 @@ function dataset(patch: Partial<Dataset> = {}): Dataset {
 
 async function openEditor() {
   const user = userEvent.setup();
-  render(<AnalysisPage />);
-  await user.click(screen.getByRole('button', { name: '编辑' }));
+  const initial = useAnalysisStore.getState().datasets[0];
+  if (!initial) {
+    throw new Error('缺少数据集');
+  }
+  render(
+    <DatasetEditor
+      dataset={initial}
+      theme={findTheme('default')}
+      onCancel={() => undefined}
+      onSave={(next) => {
+        useAnalysisStore.getState().saveDataset(next);
+      }}
+    />,
+  );
   return user;
 }
 
@@ -122,6 +143,32 @@ describe('dataset field display', () => {
     expect(saved?.dimension).toEqual({ field: 'FMaterialId', display: 'name' });
     expect(saved?.series).toEqual({ field: 'FMaterialId', display: 'number' });
     expect(saved?.measure).toEqual({ field: 'FQty', display: 'value' });
+  });
+
+  it('offers month grouping only after a date field is selected', async () => {
+    const user = await openEditor();
+    expect(
+      screen.queryByRole('checkbox', { name: 'X 轴是否按月分组' }),
+    ).not.toBeInTheDocument();
+
+    const axes = screen.getAllByPlaceholderText('输入中文名或字段标识筛选');
+    await user.click(axes[0]);
+    await user.click(
+      await screen.findByRole('button', { name: '日期（FDate）' }),
+    );
+
+    const monthGroup = screen.getByRole('checkbox', {
+      name: 'X 轴是否按月分组',
+    });
+    expect(monthGroup).not.toBeChecked();
+    await user.click(monthGroup);
+    await user.click(screen.getByRole('button', { name: '保存数据集' }));
+
+    expect(useAnalysisStore.getState().datasets[0]?.dimension).toEqual({
+      field: 'FDate',
+      display: 'value',
+      groupByMonth: true,
+    });
   });
 
   it('offers only numeric fields for a sum measure', async () => {
@@ -190,6 +237,24 @@ describe('dataset field display', () => {
     ]);
   });
 
+  it('saves a detail column marked for summing', async () => {
+    const user = await openEditor();
+
+    await user.click(screen.getByRole('combobox', { name: '展示' }));
+    await user.click(screen.getByRole('button', { name: '明细表' }));
+    await user.click(screen.getByRole('button', { name: '添加列' }));
+    await user.click(screen.getByPlaceholderText('列字段'));
+    await user.click(
+      await screen.findByRole('button', { name: '数量（FQty）' }),
+    );
+    await user.click(screen.getByRole('checkbox', { name: '求和 FQty' }));
+    await user.click(screen.getByRole('button', { name: '保存数据集' }));
+
+    expect(useAnalysisStore.getState().datasets[0]?.columns).toEqual([
+      { field: 'FQty', display: 'value', sum: true },
+    ]);
+  });
+
   it('pages a detail preview instead of asking for a row cap', async () => {
     vi.mocked(runQuery).mockReset();
     vi.mocked(runQuery).mockResolvedValue({
@@ -218,7 +283,7 @@ describe('dataset field display', () => {
 
     await user.click(screen.getByRole('button', { name: '下一页' }));
 
-    expect(await screen.findByRole('cell', { name: '51' })).toBeInTheDocument();
+    expect(await screen.findByRole('cell', { name: '21' })).toBeInTheDocument();
     expect(runQuery).toHaveBeenLastCalledWith(expect.anything(), { page: 1 });
     expect(screen.getByRole('button', { name: '上一页' })).toBeEnabled();
   });

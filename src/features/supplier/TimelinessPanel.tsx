@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { LayoutItem } from 'react-grid-layout';
-import { formatRate } from '@/features/supplier/aggregate';
+import {
+  formatRate,
+  matchSupplier,
+  monthInRange,
+  type SupplierMatch,
+} from '@/features/supplier/aggregate';
 import { DashboardGrid } from '@/features/supplier/DashboardGrid';
 import {
   loadArrivalSources,
@@ -82,14 +87,18 @@ function receiptsFor(
 export function TimelinessPanel({
   sessionId = null,
   supplier = '',
-  month = '',
+  supplierOp = 'eq',
+  monthFrom = '',
+  monthTo = '',
   months,
   today = new Date(),
   onCatalog,
 }: {
   sessionId?: string | null;
   supplier?: string;
-  month?: string;
+  supplierOp?: SupplierMatch;
+  monthFrom?: string;
+  monthTo?: string;
   months: string[];
   today?: Date;
   onCatalog?: (suppliers: string[]) => void;
@@ -100,9 +109,9 @@ export function TimelinessPanel({
   const [graceText, setGraceText] = useState('0');
   const [source, setSource] = useState<'receive' | 'instock'>('receive');
   const todayText = useMemo(() => formatToday(today), [today]);
-  const visibleMonths = useMemo(
-    () => (month ? [month] : months),
-    [month, months],
+  const rangeMonths = useMemo(
+    () => months.filter((item) => monthInRange(item, monthFrom, monthTo)),
+    [monthFrom, monthTo, months],
   );
   const names = useMemo(() => supplierNames(sources?.lines ?? []), [sources]);
 
@@ -139,20 +148,47 @@ export function TimelinessPanel({
     onCatalog?.(names);
   }, [names, onCatalog, sources]);
 
-  const result = useMemo(() => {
+  const recentResult = useMemo(() => {
     if (!sources) {
       return null;
     }
     return evaluateTimeliness({
-      lines: sources.lines,
+      lines: sources.lines.filter((line) =>
+        matchSupplier(line.supplier, supplier, supplierOp),
+      ),
       receipts: receiptsFor(sources, source),
       graceDays: parseGrace(graceText),
       today: todayText,
-      supplier,
-      month,
-      months: visibleMonths,
+      months,
     });
-  }, [graceText, month, source, sources, supplier, todayText, visibleMonths]);
+  }, [graceText, months, source, sources, supplier, supplierOp, todayText]);
+  const result = useMemo(() => {
+    if (!sources) {
+      return null;
+    }
+    const lines = sources.lines.filter(
+      (line) =>
+        matchSupplier(line.supplier, supplier, supplierOp) &&
+        monthInRange(line.deliveryDate.slice(0, 7), monthFrom, monthTo),
+    );
+    return evaluateTimeliness({
+      lines,
+      receipts: receiptsFor(sources, source),
+      graceDays: parseGrace(graceText),
+      today: todayText,
+      months: rangeMonths,
+    });
+  }, [
+    graceText,
+    monthFrom,
+    monthTo,
+    rangeMonths,
+    supplierOp,
+    source,
+    sources,
+    supplier,
+    todayText,
+  ]);
 
   const selectClass =
     'h-9 rounded-md border border-zinc-200 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900';
@@ -225,7 +261,12 @@ export function TimelinessPanel({
               storageKey={LAYOUT_KEY}
               widgets={WIDGETS}
               defaultLayout={DEFAULT_LAYOUT}
-              render={(id) => renderWidget(id, result)}
+              render={(id) =>
+                renderWidget(
+                  id,
+                  id === 'rates' && recentResult ? recentResult : result,
+                )
+              }
             />
           </>
         )

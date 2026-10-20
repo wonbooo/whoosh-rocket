@@ -75,7 +75,7 @@ export function Header() {
 
   return (
     <header className="sticky top-0 z-30 border-b bg-white dark:border-zinc-800 dark:bg-zinc-950">
-      <div className="flex h-14 items-center justify-between px-6">
+      <div className="flex h-24 items-center justify-between px-6">
         <Link
           to="/"
           className="flex items-center gap-2 text-[15px] font-semibold tracking-tight"

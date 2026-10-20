@@ -183,11 +183,27 @@ export function defaultFieldDisplay(
   return confirmedPlainField(catalog, field) ? 'value' : 'name';
 }
 
-function resolveField(ref: FieldRef, catalog: FieldCatalog | null): FieldRef {
-  if (!confirmedPlainField(catalog, ref.field) || ref.display === 'value') {
+function withoutMonthGrouping(ref: FieldRef): FieldRef {
+  if (!ref.groupByMonth) {
     return ref;
   }
-  return { ...ref, display: 'value' };
+  const next = { ...ref };
+  delete next.groupByMonth;
+  return next;
+}
+
+function resolveField(ref: FieldRef, catalog: FieldCatalog | null): FieldRef {
+  const kind = catalog?.fields.find(
+    (field) => field.key === ref.field.trim(),
+  )?.kind;
+  const resolved = kind && kind !== 'date' ? withoutMonthGrouping(ref) : ref;
+  if (
+    !confirmedPlainField(catalog, resolved.field) ||
+    resolved.display === 'value'
+  ) {
+    return resolved;
+  }
+  return { ...resolved, display: 'value' };
 }
 
 /** 数量、日期、枚举、文本没有名称和编码。选字段时曾一律记成「名称」，这里按目录改回原值。 */
@@ -352,21 +368,28 @@ function hasLookupSuffix(field: string): boolean {
   return field.endsWith('.FNumber') || field.endsWith('.FName');
 }
 
+function isContainsOperator(operator: FilterOperator): boolean {
+  return operator === 'contains' || operator === 'notContains';
+}
+
 function lookupMatchKey(filter: Filter): string {
   const field = filter.field.trim();
   if (hasLookupSuffix(field)) {
     return field;
   }
-  return filter.operator === 'contains' ? `${field}.FName` : `${field}.FNumber`;
+  return isContainsOperator(filter.operator)
+    ? `${field}.FName`
+    : `${field}.FNumber`;
 }
 
 function compileLookup(filter: Filter): string {
   const field = filter.field.trim();
   const code = filter.value.trim();
   const name = filter.valueLabel?.trim() || code;
-  if (filter.operator === 'contains') {
+  if (isContainsOperator(filter.operator)) {
     const target = hasLookupSuffix(field) ? field : `${field}.FName`;
-    return `${target} like ${quote(`%${name}%`)}`;
+    const verb = filter.operator === 'notContains' ? 'not like' : 'like';
+    return `${target} ${verb} ${quote(`%${name}%`)}`;
   }
   const target = hasLookupSuffix(field) ? field : `${field}.FNumber`;
   const rendered = quote(code);
@@ -413,7 +436,7 @@ export function compileFilter(
   if (
     mode !== 'field' &&
     isCalendarDate(value) &&
-    filter.operator !== 'contains'
+    !isContainsOperator(filter.operator)
   ) {
     return compileCalendarDate(field, filter.operator, value);
   }
@@ -425,6 +448,8 @@ export function compileFilter(
       return `${field} <> ${rendered}`;
     case 'contains':
       return `${field} like ${quote(`%${value}%`)}`;
+    case 'notContains':
+      return `${field} not like ${quote(`%${value}%`)}`;
     case 'gt':
       return `${field} > ${mode === 'literal' ? Number(value) : rendered}`;
     case 'lt':
@@ -456,6 +481,14 @@ export interface AggregateResult {
   detail: DetailRow[];
   skipped: number;
   truncated: boolean;
+}
+
+export function monthGroup(value: string): string {
+  const match = /^(\d{4})[-/](\d{1,2})/.exec(value.trim());
+  if (!match) {
+    return value;
+  }
+  return `${match[1]}-${match[2].padStart(2, '0')}`;
 }
 
 export function cellText(cell: unknown): string {
@@ -492,6 +525,7 @@ const OPERATORS: Record<
   eq: (cell, expected) => cell === expected,
   neq: (cell, expected) => cell !== expected,
   contains: (cell, expected) => cell.includes(expected),
+  notContains: (cell, expected) => !cell.includes(expected),
   gt: (cell, expected) => compare(cell, expected, (a, b) => a > b),
   lt: (cell, expected) => compare(cell, expected, (a, b) => a < b),
 };
@@ -530,10 +564,9 @@ function matchesFilter(
   }
   const cell = cellText(cells[column]);
   if (mode === 'lookup') {
-    const expected =
-      filter.operator === 'contains'
-        ? filter.valueLabel?.trim() || filter.value.trim()
-        : filter.value.trim();
+    const expected = isContainsOperator(filter.operator)
+      ? filter.valueLabel?.trim() || filter.value.trim()
+      : filter.value.trim();
     return expected.length > 0 && OPERATORS[filter.operator](cell, expected);
   }
   if (mode === 'relativeDate') {
@@ -552,7 +585,7 @@ function matchesFilter(
   if (
     mode === 'literal' &&
     isCalendarDate(filter.value.trim()) &&
-    filter.operator !== 'contains'
+    !isContainsOperator(filter.operator)
   ) {
     return matchesCalendar(filter.operator, cell, filter.value.trim());
   }
@@ -610,6 +643,11 @@ function matchedCase(
     }
   }
   return null;
+}
+
+function groupedText(value: string, byMonth: boolean): string {
+  const text = value || '（空）';
+  return byMonth ? monthGroup(text) : text;
 }
 
 function filterExpected(
@@ -672,12 +710,20 @@ export function aggregate(
       continue;
     }
     const dimension =
-      dimensionIndex < 0 ? '合计' : cellText(cells[dimensionIndex]) || '（空）';
+      dimensionIndex < 0
+        ? '合计'
+        : groupedText(
+            cellText(cells[dimensionIndex]),
+            dataset.dimension.groupByMonth === true,
+          );
     const seriesName = dataset.seriesCases.length
       ? (matchedCase(dataset, cells, today) ?? '其他')
       : seriesIndex < 0
         ? ''
-        : cellText(cells[seriesIndex]) || '（空）';
+        : groupedText(
+            cellText(cells[seriesIndex]),
+            dataset.series?.groupByMonth === true,
+          );
     const bucket = grouped.get(dimension) ?? new Map<string, number>();
     bucket.set(seriesName, (bucket.get(seriesName) ?? 0) + contribution);
     grouped.set(dimension, bucket);

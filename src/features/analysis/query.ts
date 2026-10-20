@@ -31,13 +31,14 @@ const defaultQuery: QueryFn = (params) =>
 
 export async function runQuery(
   dataset: Dataset,
-  options: { query?: QueryFn; page?: number } = {},
+  options: { query?: QueryFn; page?: number; pageSize?: number } = {},
 ): Promise<QueryChartResult> {
   return queryChart(
     dataset,
     options.query ?? defaultQuery,
     new Date(),
     options.page ?? 0,
+    options.pageSize,
   );
 }
 

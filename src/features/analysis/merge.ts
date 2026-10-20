@@ -11,7 +11,17 @@ export interface QueryChartResult extends AggregateResult {
   queryTruncated: boolean;
 }
 
-export const DETAIL_PAGE_SIZE = 50;
+export const DETAIL_PAGE_SIZES = [20, 50, 100, 200, 500] as const;
+
+export type DetailPageSize = (typeof DETAIL_PAGE_SIZES)[number];
+
+export const DETAIL_PAGE_SIZE: DetailPageSize = 20;
+
+export function detailPageSize(value: number | undefined): DetailPageSize {
+  return (DETAIL_PAGE_SIZES as readonly number[]).includes(value ?? -1)
+    ? (value as DetailPageSize)
+    : DETAIL_PAGE_SIZE;
+}
 
 export interface QuerySource {
   formId: string;
@@ -51,9 +61,11 @@ export async function queryChart(
   query: QueryFn,
   today: Date = new Date(),
   page = 0,
+  pageSize?: number,
 ): Promise<QueryChartResult> {
   const keys = fieldKeys(dataset);
   const pageIndex = Number.isInteger(page) && page > 0 ? page : 0;
+  const size = detailPageSize(pageSize);
   const requested = await query(
     dataset.columns.length > 0
       ? {
@@ -61,8 +73,8 @@ export async function queryChart(
           fieldKeys: keys,
           filterString: compileFilters(dataset.filters, today),
           topCount: 0,
-          startRow: pageIndex * DETAIL_PAGE_SIZE,
-          limit: DETAIL_PAGE_SIZE,
+          startRow: pageIndex * size,
+          limit: size,
           orderString: detailOrder(keys),
         }
       : {

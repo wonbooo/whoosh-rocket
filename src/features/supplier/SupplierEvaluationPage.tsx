@@ -2,17 +2,23 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { LayoutItem } from 'react-grid-layout';
 import {
   formatRate,
+  matchSupplier,
+  monthInRange,
   monthOverallRate,
+  orderedMonthRange,
   productDetails,
   recentMonths,
   supplierMonthRates,
   type InspectLine,
+  type SupplierMatch,
   type SupplierMonthRates,
 } from '@/features/supplier/aggregate';
 import { AftersaleQualityPanel } from '@/features/supplier/AftersaleQualityPanel';
 import { DashboardGrid } from '@/features/supplier/DashboardGrid';
 import { loadInspectLines } from '@/features/supplier/load';
+import { MonthPicker } from '@/features/supplier/MonthPicker';
 import { TimelinessPanel } from '@/features/supplier/TimelinessPanel';
+import { SelectMenu } from '@/components/shared/SelectMenu';
 import { SuggestInput } from '@/components/shared/SuggestInput';
 import { useKingdeeStore } from '@/store/useKingdeeStore';
 
@@ -61,17 +67,15 @@ export function SupplierEvaluationPage() {
   const [loading, setLoading] = useState(Boolean(sessionId));
   const [error, setError] = useState<string | null>(null);
   const [supplier, setSupplier] = useState('');
-  const [month, setMonth] = useState(() => months[months.length - 1] ?? '');
+  const [supplierOp, setSupplierOp] = useState<SupplierMatch>('eq');
+  const [monthFrom, setMonthFrom] = useState('');
+  const [monthTo, setMonthTo] = useState('');
   const [aftersaleSuppliers, setAftersaleSuppliers] = useState<string[]>([]);
-  const [aftersaleMonths, setAftersaleMonths] = useState<string[]>([]);
   const [arrivalSuppliers, setArrivalSuppliers] = useState<string[]>([]);
   const handleCatalog = useCallback(
     (catalog: { suppliers: string[]; months: string[] }) => {
       setAftersaleSuppliers((current) =>
         sameNames(current, catalog.suppliers) ? current : catalog.suppliers,
-      );
-      setAftersaleMonths((current) =>
-        sameNames(current, catalog.months) ? current : catalog.months,
       );
     },
     [],
@@ -108,14 +112,12 @@ export function SupplierEvaluationPage() {
     };
   }, [sessionId, today]);
 
-  const visibleMonths = useMemo(
-    () => (month ? [month] : months),
-    [month, months],
-  );
   const rates = useMemo(() => {
-    const table = supplierMonthRates(lines ?? [], visibleMonths);
-    return supplier ? table.filter((row) => row.supplier === supplier) : table;
-  }, [lines, supplier, visibleMonths]);
+    const table = supplierMonthRates(lines ?? [], months);
+    return table.filter((row) =>
+      matchSupplier(row.supplier, supplier, supplierOp),
+    );
+  }, [lines, months, supplier, supplierOp]);
   const supplierOptions = useMemo(() => {
     const names = [
       ...new Set([
@@ -124,59 +126,73 @@ export function SupplierEvaluationPage() {
         ...arrivalSuppliers,
       ]),
     ].sort((left, right) => left.localeCompare(right, 'zh'));
-    return [
-      { value: '', label: '全部' },
-      ...names.map((name) => ({ value: name, label: name })),
-    ];
+    return names.map((name) => ({ value: name, label: name }));
   }, [aftersaleSuppliers, arrivalSuppliers, lines]);
-  const monthOptions = useMemo(
-    () => [...new Set([...months, ...aftersaleMonths])].sort(),
-    [aftersaleMonths, months],
-  );
 
   const renderBody = (id: WidgetId) => {
     if (id === 'summary') {
       return <SummaryTable rates={rates} />;
     }
     return (
-      <DetailPanel lines={lines ?? []} supplier={supplier} month={month} />
+      <DetailPanel
+        lines={lines ?? []}
+        supplier={supplier}
+        supplierOp={supplierOp}
+        monthFrom={monthFrom}
+        monthTo={monthTo}
+      />
     );
   };
 
-  const selectClass =
-    'h-9 rounded-md border border-zinc-200 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900';
-
   return (
     <div className="w-full px-6 py-8">
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <label className="flex items-center gap-2 text-sm">
-          供应商
-          <div className="w-52">
-            <SuggestInput
-              value={supplier}
-              options={supplierOptions}
-              placeholder="搜索供应商"
-              onChange={setSupplier}
+      <section className="mb-4 rounded-xl border border-zinc-200 p-4 dark:border-zinc-800">
+        <div className="mb-3 text-sm text-zinc-500 dark:text-zinc-400">
+          过滤条件
+        </div>
+        <div className="grid max-w-3xl grid-cols-[4.5rem_7.5rem_minmax(0,1fr)] items-center gap-x-3 gap-y-3">
+          <span className="text-right text-sm text-zinc-700 dark:text-zinc-200">
+            供应商
+          </span>
+          <SelectMenu
+            aria-label="供应商比较"
+            className="w-full"
+            value={supplierOp}
+            options={[
+              { value: 'eq', label: '等于' },
+              { value: 'neq', label: '不等于' },
+              { value: 'contains', label: '包含' },
+              { value: 'notContains', label: '不包含' },
+            ]}
+            onChange={(value) => setSupplierOp(value as SupplierMatch)}
+          />
+          <SuggestInput
+            value={supplier}
+            options={supplierOptions}
+            placeholder="搜索供应商"
+            onChange={setSupplier}
+          />
+          <span className="text-right text-sm text-zinc-700 dark:text-zinc-200">
+            时间
+          </span>
+          <div className="col-span-2 grid grid-cols-[auto_minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3">
+            <span className="text-sm text-zinc-500 dark:text-zinc-400">从</span>
+            <MonthPicker
+              label="开始年月"
+              value={monthFrom}
+              before={monthTo}
+              onChange={setMonthFrom}
+            />
+            <span className="text-sm text-zinc-500 dark:text-zinc-400">到</span>
+            <MonthPicker
+              label="结束年月"
+              value={monthTo}
+              after={monthFrom}
+              onChange={setMonthTo}
             />
           </div>
-        </label>
-        <label className="flex items-center gap-2 text-sm">
-          年月
-          <select
-            aria-label="年月"
-            className={selectClass}
-            value={month}
-            onChange={(event) => setMonth(event.target.value)}
-          >
-            <option value="">全部</option>
-            {monthOptions.map((item) => (
-              <option key={item} value={item}>
-                {item}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+        </div>
+      </section>
       <header className="mb-4">
         <h1 className="text-lg font-medium">到货检验分析</h1>
       </header>
@@ -204,15 +220,18 @@ export function SupplierEvaluationPage() {
       <TimelinessPanel
         sessionId={sessionId}
         supplier={supplier}
-        month={month}
+        supplierOp={supplierOp}
+        monthFrom={monthFrom}
+        monthTo={monthTo}
         months={months}
         today={today}
         onCatalog={handleArrivalCatalog}
       />
       <AftersaleQualityPanel
         supplier={supplier}
-        month={month}
-        onMonth={setMonth}
+        supplierOp={supplierOp}
+        monthFrom={monthFrom}
+        monthTo={monthTo}
         onCatalog={handleCatalog}
       />
     </div>
@@ -326,30 +345,42 @@ function SummaryTable({ rates }: { rates: SupplierMonthRates[] }) {
 function DetailPanel({
   lines,
   supplier,
-  month,
+  supplierOp,
+  monthFrom,
+  monthTo,
 }: {
   lines: InspectLine[];
   supplier: string;
-  month: string;
+  supplierOp: SupplierMatch;
+  monthFrom: string;
+  monthTo: string;
 }) {
   const [page, setPage] = useState(0);
-  const overallRate = monthOverallRate(lines, month, supplier);
+  const { start, end } = orderedMonthRange(monthFrom, monthTo);
+  const ranged = lines.filter(
+    (line) =>
+      matchSupplier(line.supplier, supplier, supplierOp) &&
+      monthInRange(line.month, monthFrom, monthTo),
+  );
+  const spansMonths = Boolean(start && end && start !== end);
+  const overallRate = monthOverallRate(ranged, '', '');
   const overall = formatRate(overallRate);
   const overallPerfect = overallRate === 1;
-  const rows = productDetails(lines, supplier, month);
+  const rows = productDetails(ranged, '', '');
   const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
   const current = Math.min(page, pageCount - 1);
   const visible = rows.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE);
 
   useEffect(() => {
     setPage(0);
-  }, [supplier, month, rows.length]);
+  }, [supplier, supplierOp, monthFrom, monthTo, rows.length]);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
       <div className="flex flex-wrap items-center justify-end gap-3">
         <p className="text-right text-lg font-medium">
-          {month ? '当月' : '近6个月'}综合到货合格率{' '}
+          {!start && !end ? '' : spansMonths ? `${start} 至 ${end}` : '当月'}
+          综合到货合格率{' '}
           <span
             data-testid="overall-rate"
             className={
@@ -370,7 +401,7 @@ function DetailPanel({
             <thead>
               <tr className="text-left text-xs text-zinc-500 dark:text-zinc-400">
                 <th className={stickyHead}>供应商</th>
-                {month ? null : <th className={stickyHead}>月份</th>}
+                {spansMonths ? <th className={stickyHead}>月份</th> : null}
                 <th className={stickyHead}>商品</th>
                 <th className={`${stickyHead} text-right`}>到货数量</th>
                 <th className={`${stickyHead} text-right`}>合格数量</th>
@@ -385,7 +416,9 @@ function DetailPanel({
                   className="border-b border-zinc-100 dark:border-zinc-800"
                 >
                   <td className="px-2 py-1.5">{row.supplier}</td>
-                  {month ? null : <td className="px-2 py-1.5">{row.month}</td>}
+                  {spansMonths ? (
+                    <td className="px-2 py-1.5">{row.month}</td>
+                  ) : null}
                   <td className="px-2 py-1.5">
                     {row.materialName || row.materialNumber}
                   </td>

@@ -3,6 +3,10 @@ import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { RouterProvider } from 'react-router-dom';
 import { isTauriRuntime } from '@/apis/kingdee/transport';
 import { queryClient } from '@/apis/queryClient';
+import {
+  DesktopIcon,
+  isDesktopIconView,
+} from '@/components/shared/DesktopIcon';
 import { Toaster } from '@/components/ui/toaster';
 import { LicenseGate } from '@/features/license/LicenseGate';
 import { IssueLicenseHotkey } from '@/features/license/IssueLicenseHotkey';
@@ -10,6 +14,10 @@ import { BlockInspect } from '@/features/security/BlockInspect';
 import { router } from '@/router';
 
 export default function App() {
+  if (isDesktopIconView()) {
+    return <DesktopIcon />;
+  }
+
   const inTauri = isTauriRuntime();
 
   return (

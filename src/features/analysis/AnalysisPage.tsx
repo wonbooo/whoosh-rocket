@@ -1,9 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Maximize2, Minimize2 } from 'lucide-react';
+import { Maximize2, Minimize2, Settings, Trash2, X } from 'lucide-react';
 import GridLayout, { getCompactor, useContainerWidth } from 'react-grid-layout';
 import type { LayoutItem } from 'react-grid-layout';
 import { formatKingdeeError } from '@/apis/kingdee/client';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { SuggestInput } from '@/components/shared/SuggestInput';
 import type { SuggestColors } from '@/components/shared/SuggestInput';
@@ -22,7 +30,6 @@ import {
   validateDataset,
 } from '@/features/analysis/model';
 import {
-  compatibleChartTypes,
   fieldLabels,
   fieldNeeds,
   measureNotNumericMessage,
@@ -41,6 +48,7 @@ import {
   type LookupMatch,
   type QueryChartResult,
 } from '@/features/analysis/query';
+import { DETAIL_PAGE_SIZE } from '@/features/analysis/merge';
 import { useAnalysisStore } from '@/features/analysis/store';
 import { findTheme } from '@/features/analysis/themes';
 import type { BoardTheme } from '@/features/analysis/themes';
@@ -51,6 +59,7 @@ import {
 } from '@/features/analysis/overlap';
 import {
   BOARD_TEMPLATES,
+  instantiateSavedTemplate,
   instantiateTemplate,
 } from '@/features/analysis/templates';
 import type {
@@ -79,6 +88,7 @@ const COMPARE_LABELS: Record<FilterOperator, string> = {
   eq: '等于',
   neq: '不等于',
   contains: '包含',
+  notContains: '不包含',
   gt: '大于',
   lt: '小于',
 };
@@ -105,7 +115,7 @@ function operatorsFor(kind: FieldKind): { value: string; label: string }[] {
     ];
   }
   if (kind === 'lookup') {
-    return ['eq', 'neq', 'contains'].map((value) => ({
+    return ['eq', 'neq', 'contains', 'notContains'].map((value) => ({
       value,
       label: COMPARE_LABELS[value as FilterOperator],
     }));
@@ -122,7 +132,7 @@ function operatorsFor(kind: FieldKind): { value: string; label: string }[] {
       label: COMPARE_LABELS[value as FilterOperator],
     }));
   }
-  return ['eq', 'neq', 'contains'].map((value) => ({
+  return ['eq', 'neq', 'contains', 'notContains'].map((value) => ({
     value,
     label: COMPARE_LABELS[value as FilterOperator],
   }));
@@ -245,19 +255,61 @@ function newId(): string {
   return crypto.randomUUID();
 }
 
-function dashboardsUsing(dashboards: Dashboard[], datasetId: string): number {
-  return dashboards.filter((dashboard) =>
-    dashboard.widgets.some(
-      (widget) =>
-        widget.datasetId === datasetId || widget.sources.includes(datasetId),
-    ),
-  ).length;
+const PANEL_W = 6;
+const PANEL_H = 8;
+const GRID_COLS = 12;
+const ROW_HEIGHT = 32;
+const GRID_MARGIN: readonly [number, number] = [16, 16];
+function cellBox(cell: { x: number; y: number }, gridWidth: number) {
+  const colWidth =
+    (gridWidth - GRID_MARGIN[0] * (GRID_COLS - 1) - GRID_MARGIN[0] * 2) /
+    GRID_COLS;
+  const left = Math.round(
+    (colWidth + GRID_MARGIN[0]) * cell.x + GRID_MARGIN[0],
+  );
+  const top = Math.round(
+    (ROW_HEIGHT + GRID_MARGIN[1]) * cell.y + GRID_MARGIN[1],
+  );
+  const width = Math.round(colWidth * PANEL_W + GRID_MARGIN[0] * (PANEL_W - 1));
+  const height = Math.round(
+    ROW_HEIGHT * PANEL_H + GRID_MARGIN[1] * (PANEL_H - 1),
+  );
+  return { left, top, width, height };
+}
+
+function gridCell(
+  clientX: number,
+  clientY: number,
+  grid: HTMLElement,
+  gridWidth: number,
+  maxY: number,
+): { x: number; y: number } | null {
+  const colWidth =
+    (gridWidth - GRID_MARGIN[0] * (GRID_COLS - 1) - GRID_MARGIN[0] * 2) /
+    GRID_COLS;
+  if (!(colWidth > 1)) {
+    return { x: 0, y: 0 };
+  }
+  const rect = grid.getBoundingClientRect();
+  const itemWidth = colWidth * PANEL_W + GRID_MARGIN[0] * (PANEL_W - 1);
+  const itemHeight = ROW_HEIGHT * PANEL_H + GRID_MARGIN[1] * (PANEL_H - 1);
+  const left = clientX - rect.left - itemWidth / 2;
+  const top = clientY - rect.top - itemHeight / 2;
+  const x = Math.round((left - GRID_MARGIN[0]) / (colWidth + GRID_MARGIN[0]));
+  const y = Math.round((top - GRID_MARGIN[1]) / (ROW_HEIGHT + GRID_MARGIN[1]));
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    return null;
+  }
+  return {
+    x: Math.max(0, Math.min(GRID_COLS - PANEL_W, x)),
+    y: Math.max(0, Math.min(maxY, y)),
+  };
 }
 
 function blankDataset(): Dataset {
   return {
     id: newId(),
-    name: '',
+    name: '未命名图表',
     formId: '',
     dimension: { field: '', display: 'name' },
     series: null,
@@ -271,13 +323,32 @@ function blankDataset(): Dataset {
   };
 }
 
+function duplicateName(name: string, names: string[]): boolean {
+  const trimmed = name.trim();
+  return trimmed.length > 0 && names.some((item) => item.trim() === trimmed);
+}
+
+function widgetTitle(widget: Widget, datasets: Dataset[]): string {
+  const name = datasets
+    .find((dataset) => dataset.id === widget.datasetId)
+    ?.name.trim();
+  return name || widget.title || '未命名图表';
+}
+
 export function AnalysisPage() {
   const { toast } = useToast();
   const datasets = useAnalysisStore((state) => state.datasets);
   const dashboards = useAnalysisStore((state) => state.dashboards);
   const saveDataset = useAnalysisStore((state) => state.saveDataset);
-  const deleteDataset = useAnalysisStore((state) => state.deleteDataset);
   const saveDashboard = useAnalysisStore((state) => state.saveDashboard);
+  const savedTemplates = useAnalysisStore((state) => state.savedTemplates);
+  const saveBoardTemplate = useAnalysisStore(
+    (state) => state.saveBoardTemplate,
+  );
+  const hiddenTemplateIds = useAnalysisStore(
+    (state) => state.hiddenTemplateIds,
+  );
+  const deleteTemplate = useAnalysisStore((state) => state.deleteTemplate);
   const deleteDashboard = useAnalysisStore((state) => state.deleteDashboard);
   const applyTemplate = useAnalysisStore((state) => state.applyTemplate);
   const themeId = useAnalysisStore((state) => state.themeId);
@@ -297,51 +368,90 @@ export function AnalysisPage() {
         colorScheme: theme.dark ? 'dark' : 'light',
       }}
     >
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-lg font-medium">数据分析</h1>
-      </div>
-      {dashboard ? (
-        <DashboardView
-          dashboard={dashboard}
-          datasets={datasets}
-          theme={theme}
-          onBack={() => setOpenDashboard(null)}
-          onDelete={() => {
-            deleteDashboard(dashboard.id);
-            setOpenDashboard(null);
-          }}
-        />
-      ) : editing ? (
+      {editing ? (
         <DatasetEditor
           dataset={editing}
           theme={theme}
           onCancel={() => setEditing(null)}
           onSave={(dataset) => {
             saveDataset(dataset);
+            if (dashboard) {
+              const widgets = dashboard.widgets.map((widget) =>
+                widget.datasetId === dataset.id
+                  ? {
+                      ...widget,
+                      title: dataset.name.trim() || widget.title,
+                      chartType: dataset.chartType,
+                    }
+                  : widget,
+              );
+              const changed = widgets.some(
+                (widget, index) =>
+                  widget.title !== dashboard.widgets[index]?.title ||
+                  widget.chartType !== dashboard.widgets[index]?.chartType,
+              );
+              if (changed) {
+                saveDashboard({ ...dashboard, widgets });
+              }
+            }
             setEditing(null);
             toast({ title: '数据集已保存', description: dataset.name });
           }}
         />
+      ) : dashboard ? (
+        <DashboardView
+          dashboard={dashboard}
+          datasets={datasets}
+          theme={theme}
+          onBack={() => setOpenDashboard(null)}
+          onEditDataset={setEditing}
+          templateNames={[
+            ...BOARD_TEMPLATES.map((template) => template.name),
+            ...(savedTemplates ?? []).map((template) => template.name),
+          ]}
+          onSaveTemplate={(name) => {
+            const referenced = new Set<string>();
+            for (const widget of dashboard.widgets) {
+              if (widget.datasetId) {
+                referenced.add(widget.datasetId);
+              }
+              for (const source of widget.sources ?? []) {
+                referenced.add(source);
+              }
+            }
+            saveBoardTemplate({
+              id: newId(),
+              name,
+              datasets: datasets
+                .filter((dataset) => referenced.has(dataset.id))
+                .map((dataset) => {
+                  const copy = { ...dataset };
+                  delete copy.dashboardId;
+                  return copy;
+                }),
+              filters: dashboard.filters.map((filter) => ({ ...filter })),
+              widgets: dashboard.widgets.map((widget) => ({
+                ...widget,
+                sources: [...(widget.sources ?? [])],
+                layout: { ...widget.layout },
+              })),
+            });
+            toast({ title: '已保存为模板', description: name });
+          }}
+        />
       ) : (
         <Overview
-          datasets={datasets}
           dashboards={dashboards}
           theme={theme}
-          onEditDataset={setEditing}
-          onCreateDataset={() => setEditing(blankDataset())}
-          onDeleteDataset={(id) => {
-            const used = dashboardsUsing(dashboards, id);
-            const dataset = datasets.find((item) => item.id === id);
-            if (dataset?.origin && used > 0) {
-              toast({
-                title: '无法删除',
-                description: `该数据集被 ${used} 个看板使用，先删除对应看板后再删`,
-              });
-              return;
-            }
-            deleteDataset(id);
-          }}
+          templates={[
+            ...BOARD_TEMPLATES.filter(
+              (template) => !hiddenTemplateIds?.includes(template.id),
+            ),
+            ...(savedTemplates ?? []),
+          ]}
+          onHideTemplate={deleteTemplate}
           onOpenDashboard={setOpenDashboard}
+          onDeleteDashboard={deleteDashboard}
           onCreateDashboard={() => {
             const created: Dashboard = {
               id: newId(),
@@ -352,14 +462,21 @@ export function AnalysisPage() {
             saveDashboard(created);
             setOpenDashboard(created.id);
           }}
-          onApplyTemplate={(templateId) => {
-            const template = BOARD_TEMPLATES.find(
+          onApplyTemplate={(templateId, dashboardName) => {
+            const saved = (savedTemplates ?? []).find(
               (item) => item.id === templateId,
             );
-            if (!template) {
+            const builtin = BOARD_TEMPLATES.find(
+              (item) => item.id === templateId,
+            );
+            const board = saved
+              ? instantiateSavedTemplate(saved, dashboardName)
+              : builtin
+                ? instantiateTemplate(builtin, dashboardName)
+                : null;
+            if (!board) {
               return;
             }
-            const board = instantiateTemplate(template);
             applyTemplate(board);
             setOpenDashboard(board.dashboard.id);
             toast({
@@ -374,107 +491,78 @@ export function AnalysisPage() {
 }
 
 function Overview({
-  datasets,
   dashboards,
   theme,
-  onEditDataset,
-  onCreateDataset,
-  onDeleteDataset,
+  templates,
+  onHideTemplate,
   onOpenDashboard,
+  onDeleteDashboard,
   onCreateDashboard,
   onApplyTemplate,
 }: {
-  datasets: Dataset[];
   dashboards: Dashboard[];
   theme: BoardTheme;
-  onEditDataset: (dataset: Dataset) => void;
-  onCreateDataset: () => void;
-  onDeleteDataset: (id: string) => void;
+  templates: { id: string; name: string }[];
+  onHideTemplate: (id: string) => void;
   onOpenDashboard: (id: string) => void;
+  onDeleteDashboard: (id: string) => void;
   onCreateDashboard: () => void;
-  onApplyTemplate: (templateId: string) => void;
+  onApplyTemplate: (templateId: string, dashboardName: string) => void;
 }) {
   const muted = { color: theme.textMuted };
+  const [pendingTemplate, setPendingTemplate] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<
+    | { kind: 'template'; id: string; name: string }
+    | { kind: 'dashboard'; id: string; name: string }
+    | null
+  >(null);
+  const [boardName, setBoardName] = useState('');
+  const boardNameTaken = duplicateName(
+    boardName,
+    dashboards.map((item) => item.name),
+  );
+  const boardNameMessage = !boardName.trim()
+    ? '请填写看板名称'
+    : boardNameTaken
+      ? '看板名称已存在'
+      : '';
   return (
-    <div className="grid gap-6 md:grid-cols-2">
+    <div>
       <section className="rounded-xl border p-5" style={panelStyle(theme)}>
-        <header className="mb-4 flex items-center justify-between">
-          <h2 className="text-sm font-medium">数据集</h2>
-          <Button type="button" size="sm" onClick={onCreateDataset}>
-            新建数据集
-          </Button>
-        </header>
-        {datasets.length === 0 ? (
-          <p className="text-sm" style={muted}>
-            还没有数据集。
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {datasets.map((dataset) => (
-              <li
-                key={dataset.id}
-                className="flex items-center justify-between rounded-lg border px-3 py-2"
-                style={{ borderColor: theme.border }}
-              >
-                <div>
-                  <div className="text-sm font-medium">{dataset.name}</div>
-                  <div className="text-xs" style={muted}>
-                    {dataset.formId} · {dataset.dimension.field}
-                    {dataset.origin
-                      ? ` · 模板：${
-                          BOARD_TEMPLATES.find(
-                            (template) =>
-                              template.id === dataset.origin?.templateId,
-                          )?.name ?? dataset.origin.templateId
-                        }`
-                      : ''}
-                    {` · 被 ${dashboardsUsing(dashboards, dataset.id)} 个看板使用`}
-                  </div>
-                </div>
-                <div className="flex gap-1">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => onEditDataset(dataset)}
-                  >
-                    编辑
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => onDeleteDataset(dataset.id)}
-                  >
-                    删除
-                  </Button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-      <section className="rounded-xl border p-5" style={panelStyle(theme)}>
-        <header className="mb-4 flex items-center justify-between">
+        <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-sm font-medium">看板</h2>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
             <SelectMenu
               aria-label="从模板创建"
-              className="w-32 text-xs"
+              className="w-96"
               value=""
               placeholder="从模板创建"
               colors={suggestColors(theme)}
-              options={[
-                { value: '', label: '从模板创建' },
-                ...BOARD_TEMPLATES.map((template) => ({
-                  value: template.id,
-                  label: template.name,
-                })),
-              ]}
+              options={templates.map((template) => ({
+                value: template.id,
+                label: template.name,
+              }))}
               onChange={(value) => {
-                if (value) {
-                  onApplyTemplate(value);
+                const template = templates.find((item) => item.id === value);
+                if (!template) {
+                  return;
                 }
+                setPendingTemplate(template);
+                setBoardName(template.name);
+              }}
+              onRemove={(id) => {
+                const template = templates.find((item) => item.id === id);
+                if (!template) {
+                  return;
+                }
+                setPendingDelete({
+                  kind: 'template',
+                  id: template.id,
+                  name: template.name,
+                });
               }}
             />
             <Button type="button" size="sm" onClick={onCreateDashboard}>
@@ -489,11 +577,14 @@ function Overview({
         ) : (
           <ul className="flex flex-col gap-2">
             {dashboards.map((dashboard) => (
-              <li key={dashboard.id}>
+              <li
+                key={dashboard.id}
+                className="flex items-center rounded-lg border"
+                style={{ borderColor: theme.border }}
+              >
                 <button
                   type="button"
-                  className="w-full rounded-lg border px-3 py-2 text-left"
-                  style={{ borderColor: theme.border }}
+                  className="min-w-0 flex-1 px-3 py-2 text-left"
                   onMouseEnter={(event) => {
                     event.currentTarget.style.background = theme.panelAlt;
                   }}
@@ -507,11 +598,131 @@ function Overview({
                     {dashboard.widgets.length} 个图表
                   </div>
                 </button>
+                <button
+                  type="button"
+                  aria-label={`删除 ${dashboard.name}`}
+                  title="删除看板"
+                  className="mr-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
+                  style={{ color: theme.textMuted }}
+                  onMouseEnter={(event) => {
+                    event.currentTarget.style.background = theme.panelAlt;
+                    event.currentTarget.style.color = theme.text;
+                  }}
+                  onMouseLeave={(event) => {
+                    event.currentTarget.style.background = 'transparent';
+                    event.currentTarget.style.color = theme.textMuted;
+                  }}
+                  onClick={() =>
+                    setPendingDelete({
+                      kind: 'dashboard',
+                      id: dashboard.id,
+                      name: dashboard.name,
+                    })
+                  }
+                >
+                  <X className="h-4 w-4" />
+                </button>
               </li>
             ))}
           </ul>
         )}
       </section>
+      <Dialog
+        open={pendingTemplate !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingTemplate(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>从模板创建</DialogTitle>
+            <DialogDescription>
+              为「{pendingTemplate?.name ?? ''}」填写一个看板名称
+            </DialogDescription>
+          </DialogHeader>
+          <label className="flex flex-col gap-1.5 text-sm">
+            看板名称
+            <Input
+              aria-label="看板名称"
+              value={boardName}
+              onChange={(event) => setBoardName(event.target.value)}
+            />
+            {boardNameMessage ? (
+              <span className="text-xs text-red-500">{boardNameMessage}</span>
+            ) : null}
+          </label>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setPendingTemplate(null)}
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              disabled={boardNameMessage.length > 0}
+              onClick={() => {
+                if (!pendingTemplate || boardNameMessage) {
+                  return;
+                }
+                onApplyTemplate(pendingTemplate.id, boardName.trim());
+                setPendingTemplate(null);
+              }}
+            >
+              确定
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDelete(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {pendingDelete?.kind === 'template' ? '删除模板' : '删除看板'}
+            </DialogTitle>
+            <DialogDescription>
+              {pendingDelete?.kind === 'template'
+                ? `确定删除模板「${pendingDelete.name}」？模板里的数据集也会删除。`
+                : `确定删除看板「${pendingDelete?.name ?? ''}」？这块看板里的数据集也会删除。`}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setPendingDelete(null)}
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                if (!pendingDelete) {
+                  return;
+                }
+                if (pendingDelete.kind === 'template') {
+                  onHideTemplate(pendingDelete.id);
+                } else {
+                  onDeleteDashboard(pendingDelete.id);
+                }
+                setPendingDelete(null);
+              }}
+            >
+              确定
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -855,6 +1066,15 @@ export function FilterRows({
   );
 }
 
+function catalogKind(
+  catalog: FieldCatalog | null,
+  field: string,
+): FieldKind | null {
+  return (
+    catalog?.fields.find((item) => item.key === field.trim())?.kind ?? null
+  );
+}
+
 function FieldInput({
   label,
   field,
@@ -870,6 +1090,18 @@ function FieldInput({
   kinds?: FieldKind[];
   onChange: (field: FieldRef) => void;
 }) {
+  const kind = catalogKind(catalog, field.field);
+  const applyField = (next: string) => {
+    const same = next === field.field;
+    const selected: FieldRef = {
+      field: next,
+      display: same ? field.display : defaultFieldDisplay(catalog, next),
+    };
+    if (catalogKind(catalog, next) === 'date' && field.groupByMonth) {
+      selected.groupByMonth = true;
+    }
+    onChange(selected);
+  };
   return (
     <div
       className="flex flex-col gap-1.5 text-sm"
@@ -881,21 +1113,32 @@ function FieldInput({
         placeholder="输入中文名或字段标识筛选"
         options={fieldOptions(catalog, kinds)}
         colors={suggestColors(theme)}
-        onChange={(next) =>
-          onChange({
-            field: next,
-            display:
-              next === field.field
-                ? field.display
-                : defaultFieldDisplay(catalog, next),
-          })
-        }
+        onChange={applyField}
       />
+      {kind === 'date' ? (
+        <label className="flex items-center gap-1.5">
+          <input
+            type="checkbox"
+            aria-label={`${label}是否按月分组`}
+            checked={field.groupByMonth === true}
+            onChange={(event) => {
+              const next = { ...field };
+              if (event.target.checked) {
+                next.groupByMonth = true;
+              } else {
+                delete next.groupByMonth;
+              }
+              onChange(next);
+            }}
+          />
+          是否按月分组
+        </label>
+      ) : null}
     </div>
   );
 }
 
-function DatasetEditor({
+export function DatasetEditor({
   dataset,
   theme,
   onCancel,
@@ -1246,6 +1489,36 @@ function DatasetEditor({
                       }
                     />
                   </div>
+                  <label
+                    className="flex shrink-0 items-center gap-1.5 text-sm"
+                    style={muted}
+                  >
+                    <input
+                      type="checkbox"
+                      aria-label={
+                        column.field.trim()
+                          ? `求和 ${column.field.trim()}`
+                          : `求和 ${index + 1}`
+                      }
+                      checked={column.sum === true}
+                      onChange={(event) =>
+                        update({
+                          columns: draft.columns.map((item, current) => {
+                            if (current !== index) {
+                              return item;
+                            }
+                            if (event.target.checked) {
+                              return { ...item, sum: true };
+                            }
+                            const next = { ...item };
+                            delete next.sum;
+                            return next;
+                          }),
+                        })
+                      }
+                    />
+                    求和
+                  </label>
                   <Button
                     type="button"
                     variant="ghost"
@@ -1416,30 +1689,41 @@ function DashboardView({
   datasets,
   theme,
   onBack,
-  onDelete,
+  onEditDataset,
+  templateNames,
+  onSaveTemplate,
 }: {
   dashboard: Dashboard;
   datasets: Dataset[];
   theme: BoardTheme;
   onBack: () => void;
-  onDelete: () => void;
+  onEditDataset: (dataset: Dataset) => void;
+  templateNames: string[];
+  onSaveTemplate: (name: string) => void;
 }) {
   const { toast } = useToast();
   const serverUrl = useKingdeeStore((state) => state.serverUrl);
   const acctName = useKingdeeStore((state) => state.acctName);
   const saveDashboard = useAnalysisStore((state) => state.saveDashboard);
+  const saveDataset = useAnalysisStore((state) => state.saveDataset);
   const saveWidget = useAnalysisStore((state) => state.saveWidget);
   const deleteWidget = useAnalysisStore((state) => state.deleteWidget);
+  const deleteDataset = useAnalysisStore((state) => state.deleteDataset);
+  const [removeTarget, setRemoveTarget] = useState<Widget | null>(null);
   const [adding, setAdding] = useState(false);
+  const pointerRef = useRef({ x: 0, y: 0 });
+  const placeholderRef = useRef<HTMLDivElement>(null);
   const [filterCatalog, setFilterCatalog] = useState<FieldCatalog | null>(null);
   const [loadingFilterFields, setLoadingFilterFields] = useState(false);
-  const [widgetDraft, setWidgetDraft] = useState({
-    title: '',
-    datasetId: datasets[0]?.id ?? '',
-    chartType: (datasets[0]?.chartType ?? 'bar') as ChartType,
-    extraIds: [] as string[],
-  });
   const [expanded, setExpanded] = useState<Widget | null>(null);
+  const [savingTemplate, setSavingTemplate] = useState(false);
+  const [templateName, setTemplateName] = useState('');
+  const templateNameTaken = duplicateName(templateName, templateNames);
+  const templateNameMessage = !templateName.trim()
+    ? '请填写模板名称'
+    : templateNameTaken
+      ? '模板名称已存在'
+      : '';
 
   const { width, containerRef, mounted } = useContainerWidth();
 
@@ -1525,158 +1809,273 @@ function DashboardView({
     };
   });
 
-  const handleAddWidget = () => {
-    if (!widgetDraft.datasetId) {
-      toast({ title: '请先创建数据集' });
+  const placePanel = (item: { x: number; y: number; w: number; h: number }) => {
+    const dataset = { ...blankDataset(), dashboardId: dashboard.id };
+    saveDataset(dataset);
+    saveWidget(dashboard.id, {
+      id: newId(),
+      title: dataset.name,
+      datasetId: dataset.id,
+      chartType: dataset.chartType,
+      sources: [],
+      layout: { x: item.x, y: item.y, w: item.w, h: item.h },
+    });
+    setAdding(false);
+  };
+  const placeRef = useRef(placePanel);
+  placeRef.current = placePanel;
+  const maxYRef = useRef(0);
+  maxYRef.current =
+    groupedLayout.reduce((max, item) => Math.max(max, item.y + item.h), 0) +
+    PANEL_H;
+  const widthRef = useRef(width);
+  widthRef.current = width;
+  const dragActive = useRef(false);
+
+  const hidePlaceholder = () => {
+    const node = placeholderRef.current;
+    if (!node) {
       return;
     }
-    const widget: Widget = {
-      id: newId(),
-      title: widgetDraft.title.trim() || '未命名图表',
-      datasetId: widgetDraft.datasetId,
-      chartType: widgetDraft.chartType,
-      sources: widgetDraft.extraIds,
-      layout: {
-        x: (dashboard.widgets.length % 2) * 6,
-        y: Infinity,
-        w: 6,
-        h: 8,
-      },
+    node.style.display = 'none';
+  };
+
+  const beginDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0 || dragActive.current) {
+      return;
+    }
+    event.preventDefault();
+    dragActive.current = true;
+    const pointerId = event.pointerId;
+    pointerRef.current = { x: event.clientX, y: event.clientY };
+    try {
+      event.currentTarget.setPointerCapture(pointerId);
+    } catch {
+      // 部分环境不支持指针捕获，松开按键时仍会结束拖拽。
+    }
+    const previousCursor = document.body.style.cursor;
+    const previousSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'grabbing';
+    document.body.style.userSelect = 'none';
+    setAdding(true);
+    let speed = 0;
+    let frame = 0;
+
+    const gridNode = () =>
+      containerRef.current?.querySelector<HTMLElement>('.react-grid-layout') ??
+      null;
+
+    const follow = () => {
+      const grid = gridNode();
+      const node = placeholderRef.current;
+      if (!grid || !node) {
+        return;
+      }
+      const next = gridCell(
+        pointerRef.current.x,
+        pointerRef.current.y,
+        grid,
+        widthRef.current,
+        maxYRef.current,
+      );
+      if (!next) {
+        return;
+      }
+      const box = cellBox(next, widthRef.current);
+      node.style.display = 'block';
+      node.style.pointerEvents = 'none';
+      node.style.width = `${box.width}px`;
+      node.style.height = `${box.height}px`;
+      node.style.transform = `translate(${box.left}px, ${box.top}px)`;
     };
-    saveWidget(dashboard.id, widget);
-    setAdding(false);
+
+    const finish = (place: boolean) => {
+      if (!dragActive.current) {
+        return;
+      }
+      dragActive.current = false;
+      speed = 0;
+      cancelAnimationFrame(frame);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+      window.removeEventListener('blur', onCancel);
+      window.removeEventListener('keydown', onKey);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousSelect;
+      hidePlaceholder();
+      if (place) {
+        const grid = gridNode();
+        if (grid) {
+          const next = gridCell(
+            pointerRef.current.x,
+            pointerRef.current.y,
+            grid,
+            widthRef.current,
+            maxYRef.current,
+          );
+          if (next) {
+            placeRef.current({ ...next, w: PANEL_W, h: PANEL_H });
+          }
+        }
+      }
+      setAdding(false);
+    };
+
+    const onMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) {
+        return;
+      }
+      pointerRef.current = { x: moveEvent.clientX, y: moveEvent.clientY };
+      if ((moveEvent.buttons & 1) === 0) {
+        finish(true);
+        return;
+      }
+      const edge = 72;
+      const height = window.innerHeight;
+      if (moveEvent.clientY > height - edge) {
+        speed = 10 + (moveEvent.clientY - (height - edge)) * 0.45;
+      } else if (moveEvent.clientY < edge) {
+        speed = -(10 + (edge - moveEvent.clientY) * 0.45);
+      } else {
+        speed = 0;
+      }
+      follow();
+    };
+
+    const onUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId !== pointerId) {
+        return;
+      }
+      pointerRef.current = { x: upEvent.clientX, y: upEvent.clientY };
+      finish(true);
+    };
+
+    const onCancel = () => finish(false);
+
+    const onKey = (keyEvent: KeyboardEvent) => {
+      if (keyEvent.key === 'Escape') {
+        finish(false);
+      }
+    };
+
+    const tick = () => {
+      if (!dragActive.current) {
+        return;
+      }
+      follow();
+      if (speed !== 0) {
+        const root = document.scrollingElement ?? document.documentElement;
+        const maxScroll = root.scrollHeight - root.clientHeight;
+        const nextTop = Math.min(
+          maxScroll,
+          Math.max(0, root.scrollTop + speed),
+        );
+        if (nextTop !== root.scrollTop) {
+          root.scrollTop = nextTop;
+        }
+      }
+      frame = requestAnimationFrame(tick);
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+    window.addEventListener('blur', onCancel);
+    window.addEventListener('keydown', onKey);
+    frame = requestAnimationFrame(tick);
+  };
+
+  const openDataset = (widget: Widget) => {
+    const existing = datasets.find(
+      (dataset) => dataset.id === widget.datasetId,
+    );
+    if (existing) {
+      onEditDataset(existing);
+      return;
+    }
+    const dataset = blankDataset();
+    saveDataset(dataset);
+    saveWidget(dashboard.id, { ...widget, datasetId: dataset.id });
+    onEditDataset(dataset);
+  };
+
+  const dashboards = useAnalysisStore((state) => state.dashboards);
+  const [nameDraft, setNameDraft] = useState(dashboard.name);
+  useEffect(() => {
+    setNameDraft(dashboard.name);
+  }, [dashboard.name]);
+  const nameTaken = duplicateName(
+    nameDraft,
+    dashboards
+      .filter((item) => item.id !== dashboard.id)
+      .map((item) => item.name),
+  );
+  const nameMessage = !nameDraft.trim()
+    ? '请填写看板名称'
+    : nameTaken
+      ? '看板名称已存在'
+      : '';
+  const commitName = () => {
+    const next = nameDraft.trim();
+    if (!next || nameTaken) {
+      setNameDraft(dashboard.name);
+      return;
+    }
+    if (next !== dashboard.name) {
+      saveDashboard({ ...dashboard, name: next });
+    }
   };
 
   const muted = { color: theme.textMuted };
+  const showGrid = dashboard.widgets.length > 0 || adding;
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <input
-          className="rounded-md border border-transparent bg-transparent px-2 text-lg font-medium focus:border-input focus:outline-none"
-          style={{ color: theme.text }}
-          value={dashboard.name}
-          onChange={(event) =>
-            saveDashboard({ ...dashboard, name: event.target.value })
-          }
-        />
+        <div className="min-w-0">
+          <input
+            aria-label="看板名称"
+            className="rounded-md border border-transparent bg-transparent px-2 text-lg font-medium focus:border-input focus:outline-none"
+            style={{ color: theme.text }}
+            value={nameDraft}
+            onChange={(event) => setNameDraft(event.target.value)}
+            onBlur={commitName}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.currentTarget.blur();
+              }
+            }}
+          />
+          {nameDraft.trim() !== dashboard.name.trim() && nameMessage ? (
+            <p className="px-2 text-xs text-red-500">{nameMessage}</p>
+          ) : null}
+        </div>
         <div className="flex gap-2">
-          <Button type="button" size="sm" onClick={() => setAdding(true)}>
-            添加图表
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setTemplateName(dashboard.name);
+              setSavingTemplate(true);
+            }}
+          >
+            保存为模板
           </Button>
-          <Button type="button" variant="ghost" size="sm" onClick={onDelete}>
-            删除看板
+          <Button
+            type="button"
+            size="sm"
+            data-add-chart=""
+            onPointerDown={beginDrag}
+          >
+            添加图表
           </Button>
           <Button type="button" variant="ghost" size="sm" onClick={onBack}>
             返回
           </Button>
         </div>
       </div>
-      {adding ? (
-        <div
-          className="flex items-end gap-2 rounded-xl border p-4"
-          style={panelStyle(theme)}
-        >
-          <label className="flex flex-1 flex-col gap-1.5 text-sm" style={muted}>
-            标题
-            <Input
-              value={widgetDraft.title}
-              onChange={(event) =>
-                setWidgetDraft({ ...widgetDraft, title: event.target.value })
-              }
-            />
-          </label>
-          <label className="flex flex-1 flex-col gap-1.5 text-sm" style={muted}>
-            数据集
-            <SelectMenu
-              value={widgetDraft.datasetId}
-              colors={suggestColors(theme)}
-              options={datasets.map((dataset) => ({
-                value: dataset.id,
-                label: dataset.name,
-              }))}
-              onChange={(datasetId) => {
-                const chosen = datasets.find((item) => item.id === datasetId);
-                setWidgetDraft({
-                  ...widgetDraft,
-                  datasetId,
-                  chartType: chosen?.chartType ?? widgetDraft.chartType,
-                });
-              }}
-            />
-          </label>
-          <label className="flex flex-1 flex-col gap-1.5 text-sm" style={muted}>
-            合并更多数据集（可选，按维度对齐）
-            <div
-              className="flex h-20 flex-col gap-1 overflow-auto rounded-md border px-2 py-1.5 text-sm"
-              style={{ borderColor: theme.border }}
-            >
-              {datasets.filter(
-                (dataset) => dataset.id !== widgetDraft.datasetId,
-              ).length === 0 ? (
-                <span style={muted}>没有其他数据集</span>
-              ) : (
-                datasets
-                  .filter((dataset) => dataset.id !== widgetDraft.datasetId)
-                  .map((dataset) => (
-                    <label key={dataset.id} className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={widgetDraft.extraIds.includes(dataset.id)}
-                        onChange={(event) =>
-                          setWidgetDraft({
-                            ...widgetDraft,
-                            extraIds: event.target.checked
-                              ? [...widgetDraft.extraIds, dataset.id]
-                              : widgetDraft.extraIds.filter(
-                                  (id) => id !== dataset.id,
-                                ),
-                          })
-                        }
-                      />
-                      {dataset.name}
-                    </label>
-                  ))
-              )}
-            </div>
-          </label>
-          {(datasets.find((item) => item.id === widgetDraft.datasetId)?.columns
-            .length ?? 0) > 0 ? (
-            <p className="pb-2 text-sm" style={muted}>
-              明细表，按数据集里的列显示
-            </p>
-          ) : (
-            <label className="flex flex-col gap-1.5 text-sm" style={muted}>
-              图表类型（只能换成同类图）
-              <SelectMenu
-                aria-label="图表类型"
-                value={widgetDraft.chartType}
-                colors={suggestColors(theme)}
-                options={compatibleChartTypes(
-                  datasets.find((item) => item.id === widgetDraft.datasetId)
-                    ?.chartType ?? widgetDraft.chartType,
-                )}
-                onChange={(chartType) =>
-                  setWidgetDraft({
-                    ...widgetDraft,
-                    chartType: chartType as ChartType,
-                  })
-                }
-              />
-            </label>
-          )}
-          <Button type="button" onClick={handleAddWidget}>
-            确定
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => setAdding(false)}
-          >
-            取消
-          </Button>
-        </div>
-      ) : null}
       <div className="rounded-xl border p-4" style={panelStyle(theme)}>
         {loadingFilterFields ? (
           <p className="mb-2 text-xs" style={muted}>
@@ -1690,17 +2089,31 @@ function DashboardView({
           onChange={(filters) => saveDashboard({ ...dashboard, filters })}
         />
       </div>
-      {dashboard.widgets.length === 0 ? (
+      {dashboard.widgets.length === 0 && !adding ? (
         <p className="text-sm" style={muted}>
           看板是空的，添加一个图表。
         </p>
-      ) : (
-        <div ref={containerRef}>
+      ) : null}
+      {showGrid ? (
+        <div ref={containerRef} className="relative">
           {mounted ? (
             <GridLayout
               width={width}
               layout={groupedLayout}
-              gridConfig={{ cols: 12, rowHeight: 32, margin: [16, 16] }}
+              gridConfig={{
+                cols: GRID_COLS,
+                rowHeight: ROW_HEIGHT,
+                margin: [GRID_MARGIN[0], GRID_MARGIN[1]],
+              }}
+              style={{
+                minHeight: adding
+                  ? Math.max(
+                      288,
+                      (maxYRef.current + PANEL_H) *
+                        (ROW_HEIGHT + GRID_MARGIN[1]),
+                    )
+                  : undefined,
+              }}
               compactor={getCompactor(null, true)}
               dragConfig={{
                 enabled: true,
@@ -1710,6 +2123,7 @@ function DashboardView({
                 threshold: 3,
               }}
               resizeConfig={{ enabled: true, handles: ['se'] }}
+              onDragStart={() => setAdding(false)}
               onLayoutChange={(next) => {
                 const widgets = dashboard.widgets.map((widget) => {
                   const item = next.find((entry) => entry.i === widget.id);
@@ -1745,6 +2159,14 @@ function DashboardView({
                       droppedOn(item, candidate.anchor.layout),
                   );
                   const target = landed ? landed.anchor.layout : item;
+                  if (
+                    widget.layout.x === target.x &&
+                    widget.layout.y === target.y &&
+                    widget.layout.w === target.w &&
+                    widget.layout.h === target.h
+                  ) {
+                    return widget;
+                  }
                   return {
                     ...widget,
                     layout: {
@@ -1757,8 +2179,7 @@ function DashboardView({
                 });
                 if (
                   widgets.some(
-                    (widget, index) =>
-                      widget.layout !== dashboard.widgets[index]?.layout,
+                    (widget, index) => widget !== dashboard.widgets[index],
                   )
                 ) {
                   saveDashboard({ ...dashboard, widgets });
@@ -1779,6 +2200,7 @@ function DashboardView({
                           datasets={datasets}
                           filters={dashboard.filters}
                           theme={theme}
+                          onConfigure={openDataset}
                           onExpand={setExpanded}
                           onDetach={(widget) => {
                             const taken = dashboard.widgets.filter(
@@ -1810,7 +2232,7 @@ function DashboardView({
                         <>
                           <div className="widget-drag mb-2 flex cursor-move items-center justify-between">
                             <h3 className="text-sm font-medium">
-                              {group.anchor.title}
+                              {widgetTitle(group.anchor, datasets)}
                             </h3>
                             <div className="flex items-center">
                               <Button
@@ -1818,6 +2240,7 @@ function DashboardView({
                                 variant="ghost"
                                 size="sm"
                                 title="放大"
+                                aria-label="放大"
                                 onMouseDown={(event) => event.stopPropagation()}
                                 onClick={() => setExpanded(group.anchor)}
                               >
@@ -1827,11 +2250,23 @@ function DashboardView({
                                 type="button"
                                 variant="ghost"
                                 size="sm"
-                                onClick={() =>
-                                  deleteWidget(dashboard.id, group.anchor.id)
-                                }
+                                title="配置数据集"
+                                aria-label="配置数据集"
+                                onMouseDown={(event) => event.stopPropagation()}
+                                onClick={() => openDataset(group.anchor)}
                               >
-                                移除
+                                <Settings className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                title="移除"
+                                aria-label="移除"
+                                onMouseDown={(event) => event.stopPropagation()}
+                                onClick={() => setRemoveTarget(group.anchor)}
+                              >
+                                <Trash2 className="h-4 w-4" />
                               </Button>
                             </div>
                           </div>
@@ -1851,6 +2286,58 @@ function DashboardView({
               })}
             </GridLayout>
           ) : null}
+          {adding ? (
+            <div
+              ref={placeholderRef}
+              aria-hidden
+              className="pointer-events-none absolute left-0 top-0 z-10 rounded-xl bg-red-500/20"
+              style={{ display: 'none', pointerEvents: 'none' }}
+            />
+          ) : null}
+          <Dialog
+            open={removeTarget !== null}
+            onOpenChange={(open) => {
+              if (!open) {
+                setRemoveTarget(null);
+              }
+            }}
+          >
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>移除图表</DialogTitle>
+                <DialogDescription>
+                  确定移除「
+                  {removeTarget ? widgetTitle(removeTarget, datasets) : ''}
+                  」，并删除对应的数据集？
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setRemoveTarget(null)}
+                >
+                  取消
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => {
+                    if (!removeTarget) {
+                      return;
+                    }
+                    if (removeTarget.datasetId) {
+                      deleteDataset(removeTarget.datasetId);
+                    } else {
+                      deleteWidget(dashboard.id, removeTarget.id);
+                    }
+                    setRemoveTarget(null);
+                  }}
+                >
+                  确定
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
           {expanded ? (
             <ExpandedWidget
               widget={expanded}
@@ -1858,10 +2345,63 @@ function DashboardView({
               filters={dashboard.filters}
               theme={theme}
               onClose={() => setExpanded(null)}
+              onConfigure={openDataset}
             />
           ) : null}
         </div>
-      )}
+      ) : null}
+      <Dialog
+        open={savingTemplate}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSavingTemplate(false);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>保存为模板</DialogTitle>
+            <DialogDescription>
+              保存当前看板的图表和数据集配置，之后可从模板创建新看板
+            </DialogDescription>
+          </DialogHeader>
+          <label className="flex flex-col gap-1.5 text-sm">
+            模板名称
+            <Input
+              aria-label="模板名称"
+              value={templateName}
+              onChange={(event) => setTemplateName(event.target.value)}
+            />
+            {templateNameMessage ? (
+              <span className="text-xs text-red-500">
+                {templateNameMessage}
+              </span>
+            ) : null}
+          </label>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setSavingTemplate(false)}
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              disabled={templateNameMessage.length > 0}
+              onClick={() => {
+                if (templateNameMessage) {
+                  return;
+                }
+                onSaveTemplate(templateName.trim());
+                setSavingTemplate(false);
+              }}
+            >
+              确定
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1885,6 +2425,13 @@ function WidgetBody({
       </p>
     );
   }
+  if (!dataset.formId.trim()) {
+    return (
+      <p className="text-sm" style={{ color: theme.textMuted }}>
+        点击设置图标配置数据集
+      </p>
+    );
+  }
   return (
     <WidgetChart
       dataset={dataset}
@@ -1903,6 +2450,7 @@ function WidgetTabs({
   datasets,
   filters,
   theme,
+  onConfigure,
   onDetach,
   onExpand,
 }: {
@@ -1910,13 +2458,14 @@ function WidgetTabs({
   datasets: Dataset[];
   filters: Filter[];
   theme: BoardTheme;
+  onConfigure: (widget: Widget) => void;
   onDetach: (widget: Widget) => void;
   onExpand: (widget: Widget) => void;
 }) {
   const [active, setActive] = useState(members[0]?.id ?? '');
   const current = members.find((member) => member.id === active) ?? members[0];
   return (
-    <>
+    <div className="flex h-full min-h-0 flex-col">
       <div className="mb-2 flex items-center gap-1">
         <div className="widget-drag flex min-w-0 flex-1 cursor-move gap-1 overflow-auto">
           {members.map((member) => {
@@ -1933,7 +2482,7 @@ function WidgetTabs({
                 onMouseDown={(event) => event.stopPropagation()}
                 onClick={() => setActive(member.id)}
               >
-                {member.title}
+                {widgetTitle(member, datasets)}
               </button>
             );
           })}
@@ -1945,10 +2494,22 @@ function WidgetTabs({
               variant="ghost"
               size="sm"
               title="放大"
+              aria-label="放大"
               onMouseDown={(event) => event.stopPropagation()}
               onClick={() => onExpand(current)}
             >
               <Maximize2 className="h-4 w-4" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              title="配置数据集"
+              aria-label="配置数据集"
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={() => onConfigure(current)}
+            >
+              <Settings className="h-4 w-4" />
             </Button>
             <Button
               type="button"
@@ -1973,7 +2534,7 @@ function WidgetTabs({
           />
         ) : null}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -1983,12 +2544,14 @@ function ExpandedWidget({
   filters,
   theme,
   onClose,
+  onConfigure,
 }: {
   widget: Widget;
   datasets: Dataset[];
   filters: Filter[];
   theme: BoardTheme;
   onClose: () => void;
+  onConfigure: (widget: Widget) => void;
 }) {
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
@@ -2007,16 +2570,28 @@ function ExpandedWidget({
     >
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-base font-medium">{widget.title}</h2>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          title="缩小"
-          onClick={onClose}
-        >
-          <Minimize2 className="h-4 w-4" />
-          缩小
-        </Button>
+        <div className="flex items-center">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            title="缩小"
+            aria-label="缩小"
+            onClick={onClose}
+          >
+            <Minimize2 className="h-4 w-4" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            title="配置数据集"
+            aria-label="配置数据集"
+            onClick={() => onConfigure(widget)}
+          >
+            <Settings className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
       <div
         className="min-h-0 flex-1 overflow-auto rounded-xl border p-4"
@@ -2055,6 +2630,7 @@ function WidgetChart({
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
   const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState<number>(DETAIL_PAGE_SIZE);
   const [shownPage, setShownPage] = useState(0);
 
   const filterKey = JSON.stringify(filters);
@@ -2094,7 +2670,7 @@ function WidgetChart({
               ...dataset,
               filters: [...dataset.filters, ...filters],
             },
-            { page: activePage },
+            { page: activePage, pageSize },
           );
       if (cancelled) {
         return;
@@ -2145,7 +2721,10 @@ function WidgetChart({
     serverUrl,
     acctName,
     activePage,
+    pageSize,
   ]);
+
+  const palette = useMemo(() => boardPalette(theme), [theme]);
 
   if (!sessionId) {
     return (
@@ -2190,12 +2769,21 @@ function WidgetChart({
       chartType={chartType}
       result={result}
       headers={headers}
-      palette={boardPalette(theme)}
+      palette={palette}
       dark={theme.dark}
       page={shownPage}
+      pageSize={pageSize}
       hasNext={result.queryTruncated}
       busy={loading}
       onPage={paging ? setPage : undefined}
+      onPageSize={
+        paging
+          ? (size) => {
+              setPageSize(size);
+              setPage(0);
+            }
+          : undefined
+      }
     />
   );
 }

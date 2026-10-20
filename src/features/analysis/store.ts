@@ -16,7 +16,10 @@ import type { InstantiatedBoard } from '@/features/analysis/templates';
 
 interface AnalysisStore extends AnalysisState {
   themeId: string;
+  hiddenTemplateIds: string[];
   setTheme: (themeId: string) => void;
+  hideTemplate: (id: string) => void;
+  deleteTemplate: (id: string) => void;
   saveDataset: (dataset: Dataset) => void;
   deleteDataset: (id: string) => void;
   saveDashboard: (dashboard: Dashboard) => void;
@@ -24,6 +27,10 @@ interface AnalysisStore extends AnalysisState {
   saveWidget: (dashboardId: string, widget: Widget) => void;
   deleteWidget: (dashboardId: string, widgetId: string) => void;
   applyTemplate: (board: InstantiatedBoard) => void;
+  saveBoardTemplate: (
+    template: AnalysisState['savedTemplates'][number],
+  ) => void;
+  deleteSavedTemplate: (id: string) => void;
 }
 
 function persist(state: AnalysisState): AnalysisState {
@@ -42,10 +49,24 @@ function upsert<T extends { id: string }>(items: T[], item: T): T[] {
 export const useAnalysisStore = create<AnalysisStore>((set) => ({
   ...loadAnalysisState(),
   ...loadAnalysisSettings(),
-  setTheme: (themeId) => {
-    saveAnalysisSettings({ themeId });
-    set({ themeId });
-  },
+  setTheme: (themeId) =>
+    set((state) => {
+      saveAnalysisSettings({
+        themeId,
+        hiddenTemplateIds: state.hiddenTemplateIds ?? [],
+      });
+      return { themeId };
+    }),
+  hideTemplate: (id) =>
+    set((state) => {
+      const current = state.hiddenTemplateIds ?? [];
+      if (current.includes(id)) {
+        return {};
+      }
+      const hiddenTemplateIds = [...current, id];
+      saveAnalysisSettings({ themeId: state.themeId, hiddenTemplateIds });
+      return { hiddenTemplateIds };
+    }),
   saveDataset: (dataset) =>
     set((state) =>
       persist({ ...state, datasets: upsert(state.datasets, dataset) }),
@@ -56,10 +77,14 @@ export const useAnalysisStore = create<AnalysisStore>((set) => ({
         datasets: state.datasets.filter((dataset) => dataset.id !== id),
         dashboards: state.dashboards.map((dashboard) => ({
           ...dashboard,
-          widgets: dashboard.widgets.filter(
-            (widget) => widget.datasetId !== id,
-          ),
+          widgets: dashboard.widgets
+            .filter((widget) => widget.datasetId !== id)
+            .map((widget) => ({
+              ...widget,
+              sources: (widget.sources ?? []).filter((source) => source !== id),
+            })),
         })),
+        savedTemplates: state.savedTemplates ?? [],
       }),
     ),
   saveDashboard: (dashboard) =>
@@ -67,12 +92,26 @@ export const useAnalysisStore = create<AnalysisStore>((set) => ({
       persist({ ...state, dashboards: upsert(state.dashboards, dashboard) }),
     ),
   deleteDashboard: (id) =>
-    set((state) =>
-      persist({
+    set((state) => {
+      const board = state.dashboards.find((dashboard) => dashboard.id === id);
+      const owned = datasetIdsOf(board);
+      for (const dataset of state.datasets) {
+        if (dataset.dashboardId === id) {
+          owned.add(dataset.id);
+        }
+      }
+      const keptBoards = state.dashboards.filter(
+        (dashboard) => dashboard.id !== id,
+      );
+      const stillUsed = datasetIdsOfBoards(keptBoards);
+      return persist({
         ...state,
-        dashboards: state.dashboards.filter((dashboard) => dashboard.id !== id),
-      }),
-    ),
+        dashboards: keptBoards,
+        datasets: state.datasets.filter(
+          (dataset) => !owned.has(dataset.id) || stillUsed.has(dataset.id),
+        ),
+      });
+    }),
   saveWidget: (dashboardId, widget) =>
     set((state) =>
       persist({
@@ -111,9 +150,104 @@ export const useAnalysisStore = create<AnalysisStore>((set) => ({
           state.datasets,
         ),
         dashboards: upsert(state.dashboards, board.dashboard),
+        savedTemplates: state.savedTemplates ?? [],
       }),
     ),
+  saveBoardTemplate: (template) =>
+    set((state) =>
+      persist({
+        ...state,
+        savedTemplates: upsert(state.savedTemplates ?? [], template),
+      }),
+    ),
+  deleteSavedTemplate: (id) =>
+    set((state) =>
+      persist({
+        ...state,
+        savedTemplates: (state.savedTemplates ?? []).filter(
+          (template) => template.id !== id,
+        ),
+        datasets: withoutTemplateDatasets(state.datasets, state.dashboards, id),
+      }),
+    ),
+  deleteTemplate: (id) =>
+    set((state) => {
+      const saved = (state.savedTemplates ?? []).some(
+        (template) => template.id === id,
+      );
+      if (saved) {
+        return persist({
+          ...state,
+          savedTemplates: (state.savedTemplates ?? []).filter(
+            (template) => template.id !== id,
+          ),
+          datasets: withoutTemplateDatasets(
+            state.datasets,
+            state.dashboards,
+            id,
+          ),
+        });
+      }
+      const hiddenTemplateIds = [
+        ...new Set([...(state.hiddenTemplateIds ?? []), id]),
+      ];
+      saveAnalysisSettings({
+        themeId: state.themeId,
+        hiddenTemplateIds,
+      });
+      return {
+        ...persist({
+          ...state,
+          datasets: withoutTemplateDatasets(
+            state.datasets,
+            state.dashboards,
+            id,
+          ),
+        }),
+        hiddenTemplateIds,
+      };
+    }),
 }));
+
+function datasetIdsOf(board: Dashboard | undefined): Set<string> {
+  const ids = new Set<string>();
+  for (const widget of board?.widgets ?? []) {
+    if (widget.datasetId) {
+      ids.add(widget.datasetId);
+    }
+    for (const source of widget.sources ?? []) {
+      ids.add(source);
+    }
+  }
+  return ids;
+}
+
+function datasetIdsOfBoards(dashboards: Dashboard[]): Set<string> {
+  const ids = new Set<string>();
+  for (const dashboard of dashboards) {
+    for (const id of datasetIdsOf(dashboard)) {
+      ids.add(id);
+    }
+  }
+  return ids;
+}
+
+function withoutTemplateDatasets(
+  datasets: AnalysisState['datasets'],
+  dashboards: Dashboard[],
+  templateId: string,
+): AnalysisState['datasets'] {
+  const used = datasetIdsOfBoards(dashboards);
+  return datasets.filter((dataset) => {
+    if (used.has(dataset.id) || dataset.dashboardId) {
+      return true;
+    }
+    return !(
+      dataset.origin?.templateId === templateId ||
+      dataset.id.startsWith(`template:${templateId}:`)
+    );
+  });
+}
 
 void whenHydrated('analysis')
   .then(() => {

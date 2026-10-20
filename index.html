@@ -5,6 +5,11 @@
     <link rel="icon" type="image/png" href="/icon.png" />
     <link rel="shortcut icon" href="/favicon.ico" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      if (new URLSearchParams(location.search).get('view') === 'desktop-icon') {
+        document.documentElement.classList.add('desktop-icon-view');
+      }
+    </script>
     <title>咻咻小火箭</title>
   </head>
   <body>
