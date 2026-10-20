@@ -275,8 +275,8 @@ function quote(value: string): string {
 export const RELATIVE_DATES: RelativeDate[] = [
   'today',
   'thisMonth',
+  'thisYear',
   'last6Months',
-  'last365Days',
 ];
 
 function pad(value: number): string {
@@ -310,9 +310,14 @@ export function resolveRelativeDate(
       end: formatDate(new Date(start.getFullYear(), start.getMonth() + 1, 0)),
     };
   }
-  const days = token === 'last6Months' ? 183 : 365;
+  if (token === 'thisYear') {
+    return {
+      start: formatDate(new Date(start.getFullYear(), 0, 1)),
+      end: formatDate(new Date(start.getFullYear(), 11, 31)),
+    };
+  }
   const from = new Date(start);
-  from.setDate(from.getDate() - days);
+  from.setDate(from.getDate() - 183);
   return { start: formatDate(from), end: formatDate(start) };
 }
 

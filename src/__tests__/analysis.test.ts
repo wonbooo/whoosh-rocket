@@ -1,3 +1,4 @@
+import { normalizeDataset } from '@/features/analysis/normalize';
 import {
   aggregate,
   compileFilter,
@@ -369,7 +370,25 @@ describe('query compilation', () => {
       start: '2026-09-01',
       end: '2026-09-30',
     });
-    expect(resolveRelativeDate('last365Days', today).start).toBe('2025-09-30');
+    expect(resolveRelativeDate('thisYear', today)).toEqual({
+      start: '2026-01-01',
+      end: '2026-12-31',
+    });
+    expect(resolveRelativeDate('last6Months', today).start).toBe('2026-03-31');
+    expect(
+      normalizeDataset(
+        dataset({
+          filters: [
+            {
+              field: 'FDate',
+              operator: 'eq',
+              value: 'last365Days',
+              valueMode: 'relativeDate',
+            },
+          ],
+        }),
+      ).filters[0]?.value,
+    ).toBe('thisYear');
     expect(
       compileFilters(
         [

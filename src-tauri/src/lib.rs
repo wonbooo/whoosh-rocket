@@ -19,7 +19,11 @@ pub fn run() {
                 match window.label() {
                     "main" => {
                         api.prevent_close();
-                        let _ = window.hide();
+                        let app = window.app_handle();
+                        if let Some(icon) = app.get_webview_window("desktop-icon") {
+                            let _ = icon.destroy();
+                        }
+                        app.exit(0);
                     }
                     "desktop-icon" => api.prevent_close(),
                     _ => {}
@@ -38,6 +42,7 @@ pub fn run() {
                 )?;
             }
             desktop_icon::install(app)?;
+            freelm::adopt_existing(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -52,12 +57,19 @@ pub fn run() {
             desktop_icon::desktop_icon_nudge,
             desktop_icon::desktop_icon_open,
             desktop_icon::desktop_icon_menu,
+            freelm::freelm_complete,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app, event| {
+            if let tauri::RunEvent::Exit = event {
+                freelm::shutdown();
+            }
+        });
 }
 
 mod desktop_icon;
+mod freelm;
 mod license;
 mod license_keys;
 mod store;

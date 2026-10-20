@@ -5185,6 +5185,7 @@ dependencies = [
  "hostname",
  "log",
  "pbkdf2",
+ "reqwest 0.12.28",
  "rusqlite",
  "serde",
  "serde_json",

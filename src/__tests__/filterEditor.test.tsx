@@ -67,6 +67,10 @@ describe('filter value control', () => {
     expect(screen.getByLabelText('值')).toHaveAttribute('type', 'date');
 
     await user.click(screen.getByRole('combobox', { name: '比较符' }));
+    expect(screen.getByRole('button', { name: '今年' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: '最近 365 天' }),
+    ).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '今天' }));
 
     expect(screen.queryByLabelText('值')).not.toBeInTheDocument();

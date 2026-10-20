@@ -22,8 +22,7 @@ export type ChartType =
 export type FilterOperator =
   'eq' | 'neq' | 'contains' | 'notContains' | 'gt' | 'lt';
 
-export type RelativeDate =
-  'today' | 'thisMonth' | 'last6Months' | 'last365Days';
+export type RelativeDate = 'today' | 'thisMonth' | 'thisYear' | 'last6Months';
 
 export type FilterValueMode = 'literal' | 'field' | 'relativeDate' | 'lookup';
 

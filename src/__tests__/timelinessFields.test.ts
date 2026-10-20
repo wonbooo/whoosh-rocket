@@ -84,6 +84,35 @@ describe('resolvePurchaseFields', () => {
     expect(resolved.missing).toEqual([]);
     expect(resolved.fields.entryId).toBe('FPOOrderEntry_FEntryID');
   });
+
+  it('reads the line amount and document date without using the bill total', () => {
+    const resolved = resolvePurchaseFields(
+      catalog('PUR_PurchaseOrder', [
+        field('FBillNo', '单据编号', 'text', null, 'FBillHead'),
+        field('FSupplierId', '供应商', 'lookup', 'BD_Supplier', 'FBillHead'),
+        field(
+          'FMaterialId',
+          '物料编码',
+          'lookup',
+          'BD_MATERIAL',
+          'FPOOrderEntry',
+        ),
+        field('FQty', '采购数量', 'number', null, 'FPOOrderEntry'),
+        field('FDeliveryDate', '交货日期', 'date', null, 'FPOOrderEntry'),
+        field('FDate', '单据日期', 'date', null, 'FBillHead'),
+        field('FBillAllAmount', '价税合计', 'number', null, 'FBillHead'),
+        field('FAllAmount', '价税合计', 'number', null, 'FPOOrderEntry'),
+        field('FCloseStatus', '关闭状态', 'enum', null, 'FBillHead'),
+        field('FMRPCloseStatus', '业务关闭', 'enum', null, 'FPOOrderEntry'),
+        field('FMRPFreezeStatus', '业务冻结', 'enum', null, 'FPOOrderEntry'),
+        field('FMRPTerminateStatus', '业务终止', 'enum', null, 'FPOOrderEntry'),
+      ]),
+    );
+
+    expect(resolved.missing).toEqual([]);
+    expect(resolved.fields.amount).toBe('FAllAmount');
+    expect(resolved.fields.orderDate).toBe('FDate');
+  });
 });
 
 describe('resolveReceiveFields', () => {
@@ -115,14 +144,23 @@ describe('resolveInstockFields', () => {
     const resolved = resolveInstockFields(
       catalog('STK_InStock', [
         field('FDate', '入库日期', 'date'),
-        field('FRealQty', '实收数量', 'number'),
+        field('FRealQty', '实收数量', 'number', null, 'FInStockEntry'),
         field('FPOOrderNo', '订单单号'),
         field('FPOOrderEntryId', '采购订单分录内码'),
-        field('FMaterialId', '物料编码', 'lookup', 'BD_MATERIAL'),
+        field(
+          'FMaterialId',
+          '物料编码',
+          'lookup',
+          'BD_MATERIAL',
+          'FInStockEntry',
+        ),
+        field('FAllAmount', '价税合计', 'number', null, 'FInStockEntry'),
+        field('FAmount', '金额', 'number', null, 'FBillHead'),
       ]),
     );
 
     expect(resolved.missing).toEqual([]);
+    expect(resolved.fields.amount).toBe('FAllAmount');
     expect(resolved.fields).toMatchObject({
       date: 'FDate',
       qty: 'FRealQty',

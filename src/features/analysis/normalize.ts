@@ -8,7 +8,24 @@ import type {
 } from '@/features/analysis/types';
 
 function cases(value: unknown): SeriesCase[] {
-  return Array.isArray(value) ? (value as SeriesCase[]) : [];
+  return Array.isArray(value)
+    ? (value as SeriesCase[]).map(migrateRelative)
+    : [];
+}
+
+function migrateRelative<T extends { value?: string; valueMode?: string }>(
+  item: T,
+): T {
+  if (item.valueMode === 'relativeDate' && item.value === 'last365Days') {
+    return { ...item, value: 'thisYear' };
+  }
+  return item;
+}
+
+function migrateFilters<T extends { value?: string; valueMode?: string }>(
+  filters: T[] | undefined,
+): T[] | undefined {
+  return Array.isArray(filters) ? filters.map(migrateRelative) : filters;
 }
 
 function normalizeField(field: FieldRef): FieldRef {
@@ -30,6 +47,7 @@ export function normalizeDataset(dataset: Dataset): Dataset {
     series: dataset.series ? normalizeField(dataset.series) : null,
     measure: normalizeField(dataset.measure),
     seriesCases: cases(dataset.seriesCases),
+    filters: migrateFilters(dataset.filters) ?? [],
     columns: Array.isArray(dataset.columns)
       ? dataset.columns.map(normalizeField)
       : [],
@@ -42,7 +60,7 @@ export function normalizeDataset(dataset: Dataset): Dataset {
 export function normalizeDashboard(dashboard: Dashboard): Dashboard {
   return {
     ...dashboard,
-    filters: Array.isArray(dashboard.filters) ? dashboard.filters : [],
+    filters: migrateFilters(dashboard.filters) ?? [],
     widgets: dashboard.widgets.map(normalizeWidget),
   };
 }
@@ -70,7 +88,7 @@ export function normalizeSavedTemplate(
     datasets: Array.isArray(item.datasets)
       ? item.datasets.map((dataset) => normalizeDataset(dataset))
       : [],
-    filters: Array.isArray(item.filters) ? item.filters : [],
+    filters: migrateFilters(item.filters) ?? [],
     widgets: Array.isArray(item.widgets)
       ? item.widgets.map((widget) => normalizeWidget(widget))
       : [],

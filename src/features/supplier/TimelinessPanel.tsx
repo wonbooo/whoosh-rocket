@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { LayoutItem } from 'react-grid-layout';
 import {
   formatRate,
@@ -84,6 +84,14 @@ function receiptsFor(
   return source === 'instock' ? sources.instock : sources.receive;
 }
 
+export interface ArrivalPanelState {
+  sources: ArrivalSources | null;
+  loading: boolean;
+  error: string | null;
+  graceDays: number;
+  source: 'receive' | 'instock';
+}
+
 export function TimelinessPanel({
   sessionId = null,
   supplier = '',
@@ -93,6 +101,7 @@ export function TimelinessPanel({
   months,
   today = new Date(),
   onCatalog,
+  onArrivalState,
 }: {
   sessionId?: string | null;
   supplier?: string;
@@ -102,12 +111,15 @@ export function TimelinessPanel({
   months: string[];
   today?: Date;
   onCatalog?: (suppliers: string[]) => void;
+  onArrivalState?: (state: ArrivalPanelState) => void;
 }) {
   const [sources, setSources] = useState<ArrivalSources | null>(null);
   const [loading, setLoading] = useState(Boolean(sessionId));
   const [error, setError] = useState<string | null>(null);
-  const [graceText, setGraceText] = useState('0');
+  const [graceText, setGraceText] = useState('2');
   const [source, setSource] = useState<'receive' | 'instock'>('receive');
+  const arrivalExtras = useRef({ graceText, source, onArrivalState });
+  arrivalExtras.current = { graceText, source, onArrivalState };
   const todayText = useMemo(() => formatToday(today), [today]);
   const rangeMonths = useMemo(
     () => months.filter((item) => monthInRange(item, monthFrom, monthTo)),
@@ -127,13 +139,30 @@ export function TimelinessPanel({
         if (!cancelled) {
           setSources(loaded);
           setLoading(false);
+          const extras = arrivalExtras.current;
+          extras.onArrivalState?.({
+            sources: loaded,
+            loading: false,
+            error: null,
+            graceDays: parseGrace(extras.graceText),
+            source: extras.source,
+          });
         }
       })
       .catch((caught: unknown) => {
         if (!cancelled) {
           setSources(null);
-          setError(errorMessage(caught));
+          const message = errorMessage(caught);
+          setError(message);
           setLoading(false);
+          const extras = arrivalExtras.current;
+          extras.onArrivalState?.({
+            sources: null,
+            loading: false,
+            error: message,
+            graceDays: parseGrace(extras.graceText),
+            source: extras.source,
+          });
         }
       });
     return () => {
@@ -194,7 +223,7 @@ export function TimelinessPanel({
     'h-9 rounded-md border border-zinc-200 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900';
 
   return (
-    <section className="mt-8">
+    <section id="supplier-timeliness" className="mt-8 scroll-mt-24">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-lg font-medium">到货及时率</h2>
         {sessionId ? (
@@ -209,7 +238,17 @@ export function TimelinessPanel({
                 aria-label="宽限天数"
                 className={`${selectClass} w-20`}
                 value={graceText}
-                onChange={(event) => setGraceText(event.target.value)}
+                onChange={(event) => {
+                  const next = event.target.value;
+                  setGraceText(next);
+                  onArrivalState?.({
+                    sources,
+                    loading,
+                    error,
+                    graceDays: parseGrace(next),
+                    source,
+                  });
+                }}
               />
             </label>
             <label className="flex items-center gap-2">
@@ -218,11 +257,18 @@ export function TimelinessPanel({
                 aria-label="实际到货日期"
                 className={selectClass}
                 value={source}
-                onChange={(event) =>
-                  setSource(
-                    event.target.value === 'instock' ? 'instock' : 'receive',
-                  )
-                }
+                onChange={(event) => {
+                  const next =
+                    event.target.value === 'instock' ? 'instock' : 'receive';
+                  setSource(next);
+                  onArrivalState?.({
+                    sources,
+                    loading,
+                    error,
+                    graceDays: parseGrace(graceText),
+                    source: next,
+                  });
+                }}
               >
                 <option value="receive">收料通知单</option>
                 <option value="instock">采购入库单</option>

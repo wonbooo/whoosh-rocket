@@ -646,4 +646,40 @@ describe('AftersaleQualityPanel', () => {
       '2026-10',
     ]);
   });
+
+  it('shows uploaded months before opening the file picker', async () => {
+    const click = vi
+      .spyOn(HTMLInputElement.prototype, 'click')
+      .mockImplementation(() => undefined);
+    const record = memoryRecord();
+    const event: ComplaintEvent = {
+      supplier: '禾胜禾',
+      quantity: 2,
+      companyPay: 10,
+      factoryPay: 8,
+      category: '设备包装',
+      pending: false,
+    };
+    await saveAftersaleMonth(record, {
+      month: '2026-09',
+      events: [event],
+      sheet: {
+        headers: ['厂家', '产品名称'],
+        rows: [['禾胜禾', '原表商品']],
+      },
+    });
+    render(<AftersaleQualityPanel record={record} />);
+    fireEvent.click(screen.getByRole('button', { name: '上传 Excel' }));
+    expect(click).not.toHaveBeenCalled();
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: /2026-09/ }));
+    expect(
+      within(dialog).getByRole('cell', { name: '原表商品' }),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: '选择文件上传' }),
+    );
+    expect(click).toHaveBeenCalledTimes(1);
+    click.mockRestore();
+  });
 });

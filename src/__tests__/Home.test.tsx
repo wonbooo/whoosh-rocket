@@ -108,6 +108,7 @@ describe('Home page', () => {
     await user.click(screen.getByRole('button', { name: '设置' }));
     expect(screen.getByText('设置')).toBeInTheDocument();
     expect(screen.getByLabelText(/金蝶URL/)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/FreeLM/)).not.toBeInTheDocument();
     expect(screen.getByLabelText(/账套ID/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '保存' })).toBeInTheDocument();
   });

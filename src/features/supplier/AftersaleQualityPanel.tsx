@@ -3,12 +3,20 @@ import { Upload } from 'lucide-react';
 import type { LayoutItem } from 'react-grid-layout';
 import { Button } from '@/components/ui/button';
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
   complaintBars,
   factoryPaySlices,
   loadAftersaleMonths,
   parseAftersaleQualityWorkbook,
   saveAftersaleMonth,
   supplierSummaries,
+  aftersalePreview,
   type AftersaleMonth,
 } from '@/features/supplier/aftersaleQuality';
 import {
@@ -148,6 +156,8 @@ export function AftersaleQualityPanel({
     loadAftersaleMonths(record),
   );
   const [error, setError] = useState<string | null>(null);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [openMonth, setOpenMonth] = useState<string | null>(null);
 
   useEffect(() => {
     if (!db.isAvailable()) {
@@ -220,7 +230,7 @@ export function AftersaleQualityPanel({
   };
 
   return (
-    <section className="mt-8">
+    <section id="supplier-aftersale" className="mt-8 scroll-mt-24">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-lg font-medium">售后质量指标</h2>
         <div className="flex flex-wrap items-center gap-3">
@@ -236,12 +246,99 @@ export function AftersaleQualityPanel({
               void handleFile(file);
             }}
           />
-          <Button type="button" onClick={() => fileInput.current?.click()}>
+          <Button type="button" onClick={() => setLibraryOpen(true)}>
             <Upload className="h-4 w-4" />
             上传 Excel
           </Button>
         </div>
       </div>
+      <Dialog open={libraryOpen} onOpenChange={setLibraryOpen}>
+        <DialogContent className="max-h-[85vh] max-w-4xl overflow-hidden">
+          <DialogHeader>
+            <DialogTitle>已上传的售后 Excel</DialogTitle>
+            <DialogDescription>
+              先查看已有年月和解析后的表格，再选择文件上传。同一年月会覆盖原表。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[55vh] space-y-2 overflow-auto">
+            {months.length === 0 ? (
+              <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                还没有上传过 Excel。
+              </p>
+            ) : (
+              months.map((item) => {
+                const preview = aftersalePreview(item);
+                const expanded = openMonth === item.month;
+                return (
+                  <div
+                    key={item.month}
+                    className="rounded-lg border border-zinc-200 dark:border-zinc-800"
+                  >
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-between px-3 py-2 text-left text-sm"
+                      aria-expanded={expanded}
+                      onClick={() =>
+                        setOpenMonth((current) =>
+                          current === item.month ? null : item.month,
+                        )
+                      }
+                    >
+                      <span>
+                        {item.month}
+                        <span className="ml-2 text-zinc-500">
+                          {item.events.length} 行
+                        </span>
+                      </span>
+                      <span className="text-xs text-zinc-400">
+                        {expanded ? '收起' : '查看原始数据'}
+                      </span>
+                    </button>
+                    {expanded ? (
+                      <div className="max-h-64 overflow-auto border-t border-zinc-200 dark:border-zinc-800">
+                        <table className="w-full border-separate border-spacing-0 text-xs">
+                          <thead>
+                            <tr>
+                              {preview.headers.map((header, index) => (
+                                <th
+                                  key={`${header}-${index}`}
+                                  className="sticky top-0 bg-white px-2 py-1.5 text-left font-medium dark:bg-zinc-900"
+                                >
+                                  {header || '—'}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {preview.rows.map((row, rowIndex) => (
+                              <tr key={`${item.month}-${rowIndex}`}>
+                                {preview.headers.map((_, column) => (
+                                  <td
+                                    key={`${item.month}-${rowIndex}-${column}`}
+                                    className="px-2 py-1.5 align-top"
+                                  >
+                                    {row[column] || '—'}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })
+            )}
+          </div>
+          <div className="flex justify-end">
+            <Button type="button" onClick={() => fileInput.current?.click()}>
+              <Upload className="h-4 w-4" />
+              选择文件上传
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
       {error ? (
         <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>
       ) : null}

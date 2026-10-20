@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-  whoosh_rocket_lib::run();
+    whoosh_rocket_lib::run();
 }

@@ -7,6 +7,8 @@ export interface PurchaseLine {
   orderQty: number;
   deliveryDate: string;
   excluded: boolean;
+  amount?: number | null;
+  orderDate?: string;
 }
 
 export interface ArrivalReceipt {
@@ -15,6 +17,7 @@ export interface ArrivalReceipt {
   materialNumber: string;
   date: string;
   qty: number;
+  amount?: number | null;
 }
 
 export interface TimelinessDetail {

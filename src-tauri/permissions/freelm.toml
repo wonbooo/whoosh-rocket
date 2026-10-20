@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-freelm"
+description = "Send a supplier risk summary to a local FreeLM endpoint"
+commands.allow = ["freelm_complete"]

@@ -127,6 +127,9 @@ dist
 # Tauri
 src-tauri/target
 src-tauri/gen
+# Bundled FreeLM runtime, rebuilt by npm run vendor:freelm
+src-tauri/resources/freelm/**
+!src-tauri/resources/freelm/.gitkeep
 # Serverless directories
 .serverless/
 

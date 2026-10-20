@@ -13,6 +13,8 @@ export interface PurchaseFields {
   mrpFreeze: string;
   mrpTerminate: string;
   cancelStatus: string;
+  amount?: string;
+  orderDate?: string;
 }
 
 export interface ArrivalBillFields {
@@ -21,6 +23,7 @@ export interface ArrivalBillFields {
   billNo: string;
   entryId: string;
   materialNumber: string;
+  amount?: string;
 }
 
 function isLookup(field: CatalogField): boolean {
@@ -97,6 +100,21 @@ function lineEntity(catalog: FieldCatalog): string {
   return entry?.entity || 'FPOOrderEntry';
 }
 
+function findEntryAmount(catalog: FieldCatalog, lineEntity: string): string {
+  if (!lineEntity || lineEntity === 'FBillHead') {
+    return '';
+  }
+  for (const name of ['价税合计', '含税金额', '金额']) {
+    const field = catalog.fields.find(
+      (item) => item.name === name && item.entity === lineEntity,
+    );
+    if (field) {
+      return field.key;
+    }
+  }
+  return '';
+}
+
 function statusKey(
   catalog: FieldCatalog,
   caption: string,
@@ -130,6 +148,9 @@ export function resolvePurchaseFields(catalog: FieldCatalog): {
   const entryId = entryField
     ? entryQueryKey(entryField)
     : `${lineEntity(catalog)}_FEntryID`;
+  const amount = findEntryAmount(catalog, qtyField?.entity ?? '');
+  const orderDate =
+    findByName(catalog, '单据日期') ?? findByName(catalog, '采购日期');
   const fields: Partial<PurchaseFields> = {
     ...(billField ? { billNo: billField.key } : {}),
     ...(supplierField ? { supplier: `${supplierField.key}.FName` } : {}),
@@ -140,6 +161,8 @@ export function resolvePurchaseFields(catalog: FieldCatalog): {
     ...(qtyField ? { qty: qtyField.key } : {}),
     ...(deliveryField ? { deliveryDate: deliveryField.key } : {}),
     ...(entryId ? { entryId } : {}),
+    ...(amount ? { amount } : {}),
+    ...(orderDate ? { orderDate: orderDate.key } : {}),
     closeStatus: statusKey(catalog, '关闭状态', 'FCloseStatus'),
     mrpClose: statusKey(catalog, '业务关闭', 'FMRPCloseStatus'),
     mrpFreeze: statusKey(catalog, '业务冻结', 'FMRPFreezeStatus'),
@@ -195,6 +218,7 @@ function resolveArrivalFields(
     findByKey(catalog, 'FPOOrderEntryId') ??
     findByKey(catalog, 'FSrcEntryId');
   const material = materialKeys(catalog);
+  const amount = findEntryAmount(catalog, qtyField?.entity ?? '');
   const fields: Partial<ArrivalBillFields> = {
     ...(dateField ? { date: dateField.key } : {}),
     ...(qtyField ? { qty: qtyField.key } : {}),
@@ -203,6 +227,7 @@ function resolveArrivalFields(
     ...(material.materialNumber
       ? { materialNumber: material.materialNumber }
       : {}),
+    ...(amount ? { amount } : {}),
   };
   const missing = [
     fields.date ? '' : '日期',

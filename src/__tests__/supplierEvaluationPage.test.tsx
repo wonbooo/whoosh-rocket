@@ -138,12 +138,15 @@ describe('SupplierEvaluationPage', () => {
       monthFrom.compareDocumentPosition(title) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-    expect(monthFrom).toHaveTextContent('选择年月');
-    expect(monthTo).toHaveTextContent('选择年月');
-    expect(monthFrom).not.toHaveTextContent(current);
+    expect(monthFrom).toHaveTextContent(current);
+    expect(monthTo).toHaveTextContent(current);
     expect(
       screen.getByRole('combobox', { name: '供应商比较' }),
-    ).toHaveTextContent('等于');
+    ).toHaveTextContent('包含');
+    expect(screen.getByPlaceholderText('搜索供应商')).toHaveValue('XLS');
+    expect(screen.getByLabelText('宽限天数')).toHaveValue(2);
+    await user.clear(screen.getByPlaceholderText('搜索供应商'));
+    await user.tab();
     expect(screen.getByText('过滤条件')).toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: '添加条件' }),
@@ -191,7 +194,8 @@ describe('SupplierEvaluationPage', () => {
       .closest('section') as HTMLElement;
     expect(within(summary).getByText(months[0] ?? '')).toBeInTheDocument();
 
-    const overallText = formatRate(monthOverallRate(lines, ''));
+    const currentLines = lines.filter((line) => line.month === current);
+    const overallText = formatRate(monthOverallRate(currentLines, ''));
     expect(screen.getByTestId('overall-rate')).toHaveTextContent(overallText);
     expect(screen.getByTestId('overall-rate')).toHaveClass('text-red-600');
     expect(screen.queryByText('请选择供应商')).not.toBeInTheDocument();
@@ -210,7 +214,9 @@ describe('SupplierEvaluationPage', () => {
     ).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '甲供' }));
 
-    const supplierOverall = formatRate(monthOverallRate(lines, '', '甲供'));
+    const supplierOverall = formatRate(
+      monthOverallRate(currentLines, '', '甲供'),
+    );
     expect(screen.getByTestId('overall-rate')).toHaveTextContent(
       supplierOverall,
     );
@@ -273,6 +279,8 @@ describe('SupplierEvaluationPage', () => {
     useKingdeeStore.getState().setSession('session-1', '测试');
 
     render(<SupplierEvaluationPage />);
+    await user.clear(screen.getByPlaceholderText('搜索供应商'));
+    await user.tab();
 
     expect(
       await screen.findByText('近 6 个月没有已审核的采购订单。'),

@@ -80,8 +80,8 @@ import { useKingdeeStore } from '@/store/useKingdeeStore';
 const RELATIVE_DATE_LABELS: Record<RelativeDate, string> = {
   today: '今天',
   thisMonth: '本月',
+  thisYear: '今年',
   last6Months: '最近 6 个月',
-  last365Days: '最近 365 天',
 };
 
 const COMPARE_LABELS: Record<FilterOperator, string> = {

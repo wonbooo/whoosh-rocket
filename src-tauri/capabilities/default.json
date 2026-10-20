@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "allow-desktop-icon",
+    "allow-freelm",
     {
       "identifier": "http:default",
       "allow": [{ "url": "https://**" }, { "url": "http://**" }]

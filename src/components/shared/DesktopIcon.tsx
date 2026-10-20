@@ -1,5 +1,9 @@
-import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useRef } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import {
+  dragDelta,
+  isDoubleActivate,
+} from '@/components/shared/desktopIconInput';
 import { isTauriRuntime } from '@/apis/kingdee/transport';
 
 export function isDesktopIconView() {
@@ -9,7 +13,13 @@ export function isDesktopIconView() {
 }
 
 export function DesktopIcon() {
-  const drag = useRef<{ x: number; y: number; moved: boolean } | null>(null);
+  const drag = useRef<{
+    x: number;
+    y: number;
+    travel: number;
+    moved: boolean;
+  } | null>(null);
+  const lastClick = useRef(0);
   const pending = useRef({ dx: 0, dy: 0 });
   const frame = useRef(0);
 
@@ -46,22 +56,51 @@ export function DesktopIcon() {
       onPointerDown={(event) => {
         if (event.button !== 0) return;
         event.currentTarget.setPointerCapture(event.pointerId);
-        drag.current = { x: event.screenX, y: event.screenY, moved: false };
+        drag.current = {
+          x: event.screenX,
+          y: event.screenY,
+          travel: 0,
+          moved: false,
+        };
       }}
       onPointerMove={(event) => {
         const state = drag.current;
         if (!state) return;
-        const dx = event.screenX - state.x;
-        const dy = event.screenY - state.y;
-        if (!state.moved && Math.hypot(dx, dy) < 3) return;
-        state.moved = true;
+        const delta = dragDelta(
+          { x: state.x, y: state.y },
+          {
+            x: event.screenX,
+            y: event.screenY,
+            movementX: event.movementX,
+            movementY: event.movementY,
+          },
+        );
         state.x = event.screenX;
         state.y = event.screenY;
-        queueNudge(dx, dy);
+        state.travel += Math.hypot(delta.dx, delta.dy);
+        if (!state.moved && state.travel < 3) return;
+        state.moved = true;
+        queueNudge(delta.dx, delta.dy);
       }}
-      onPointerUp={() => {
+      onPointerUp={(event) => {
+        const state = drag.current;
         drag.current = null;
         flushNudge();
+        if (!state || event.button !== 0) return;
+        const now = Date.now();
+        if (
+          isDoubleActivate({
+            moved: state.moved,
+            elapsedMs: now - lastClick.current,
+          })
+        ) {
+          lastClick.current = 0;
+          if (isTauriRuntime()) void invoke('desktop_icon_open');
+          return;
+        }
+        if (!state.moved) {
+          lastClick.current = now;
+        }
       }}
       onDoubleClick={() => {
         if (isTauriRuntime()) void invoke('desktop_icon_open');

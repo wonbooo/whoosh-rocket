@@ -40,13 +40,15 @@ pub fn install(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     .closable(false)
     .minimizable(false)
     .maximizable(false)
-    .background_color(tauri::window::Color(0, 0, 0, 0))
+    .background_color(tauri::window::Color(0, 0, 0, 1))
     .build()?;
+    let _ = window.set_ignore_cursor_events(false);
 
     #[cfg(windows)]
     {
         let handle = app.handle().clone();
         place_on_desktop(&handle, &window);
+        install_mouse_hook(handle.clone());
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(700));
             let app = handle.clone();
@@ -87,17 +89,25 @@ pub fn desktop_icon_open(app: AppHandle) {
 
 #[tauri::command]
 pub fn desktop_icon_menu(app: AppHandle) -> Result<(), String> {
-    use tauri::menu::{Menu, MenuItem};
+    #[cfg(windows)]
+    {
+        let _ = app;
+        return post_icon_menu();
+    }
+    #[cfg(not(windows))]
+    {
+        use tauri::menu::{Menu, MenuItem};
 
-    let window = app
-        .get_webview_window("desktop-icon")
-        .ok_or("没有桌面图标窗口")?;
-    let open = MenuItem::with_id(&app, "desktop-icon-open", "打开", true, None::<&str>)
-        .map_err(|err| err.to_string())?;
-    let quit = MenuItem::with_id(&app, "desktop-icon-quit", "退出", true, None::<&str>)
-        .map_err(|err| err.to_string())?;
-    let menu = Menu::with_items(&app, &[&open, &quit]).map_err(|err| err.to_string())?;
-    window.popup_menu(&menu).map_err(|err| err.to_string())
+        let window = app
+            .get_webview_window("desktop-icon")
+            .ok_or("没有桌面图标窗口")?;
+        let open = MenuItem::with_id(&app, "desktop-icon-open", "打开", true, None::<&str>)
+            .map_err(|err| err.to_string())?;
+        let quit = MenuItem::with_id(&app, "desktop-icon-quit", "退出", true, None::<&str>)
+            .map_err(|err| err.to_string())?;
+        let menu = Menu::with_items(&app, &[&open, &quit]).map_err(|err| err.to_string())?;
+        window.popup_menu(&menu).map_err(|err| err.to_string())
+    }
 }
 
 #[tauri::command]
@@ -105,19 +115,71 @@ pub fn desktop_icon_nudge(app: AppHandle, dx: f64, dy: f64) -> Result<(), String
     let window = app
         .get_webview_window("desktop-icon")
         .ok_or("没有桌面图标窗口")?;
-    let scale = window.scale_factor().map_err(|err| err.to_string())?;
-    let px = (dx * scale).round() as i32;
-    let py = (dy * scale).round() as i32;
-    if px == 0 && py == 0 {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let (px, py) = physical_delta(dx, dy, scale);
+    nudge_physical(&app, px, py)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ClickAction {
+    DragEnd,
+    Arm,
+    Open,
+}
+
+fn physical_delta(dx: f64, dy: f64, scale: f64) -> (i32, i32) {
+    let factor = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    ((dx * factor).round() as i32, (dy * factor).round() as i32)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum IconMenuAction {
+    Open,
+    Quit,
+}
+
+fn icon_menu_action(command: i32) -> Option<IconMenuAction> {
+    match command {
+        1 => Some(IconMenuAction::Open),
+        2 => Some(IconMenuAction::Quit),
+        _ => None,
+    }
+}
+
+fn classify_click(moved: bool, last_ms: Option<u32>, now_ms: u32, double_ms: u32) -> ClickAction {
+    if moved {
+        return ClickAction::DragEnd;
+    }
+    if let Some(last) = last_ms {
+        if now_ms.wrapping_sub(last) <= double_ms {
+            return ClickAction::Open;
+        }
+    }
+    ClickAction::Arm
+}
+
+fn point_in_rect(x: i32, y: i32, left: i32, top: i32, right: i32, bottom: i32) -> bool {
+    x >= left && x < right && y >= top && y < bottom
+}
+
+fn nudge_physical(app: &AppHandle, dx: i32, dy: i32) -> Result<(), String> {
+    if dx == 0 && dy == 0 {
         return Ok(());
     }
+    let window = app
+        .get_webview_window("desktop-icon")
+        .ok_or("没有桌面图标窗口")?;
 
     #[cfg(windows)]
     {
         let hwnd = window.hwnd().map_err(|err| err.to_string())?;
-        nudge(hwnd, px, py).map_err(|err| err.to_string())?;
+        nudge(hwnd, dx, dy).map_err(|err| err.to_string())?;
         if let Some((x, y)) = screen_origin(hwnd) {
-            save_pos(&app, x, y);
+            save_pos(app, x, y);
         }
     }
 
@@ -126,11 +188,11 @@ pub fn desktop_icon_nudge(app: AppHandle, dx: f64, dy: f64) -> Result<(), String
         let position = window.outer_position().map_err(|err| err.to_string())?;
         window
             .set_position(tauri::PhysicalPosition::new(
-                position.x + px,
-                position.y + py,
+                position.x + dx,
+                position.y + dy,
             ))
             .map_err(|err| err.to_string())?;
-        save_pos(&app, position.x + px, position.y + py);
+        save_pos(app, position.x + dx, position.y + dy);
     }
 
     Ok(())
@@ -159,6 +221,222 @@ fn load_pos(app: &AppHandle) -> Option<(i32, i32)> {
 }
 
 #[cfg(windows)]
+struct IconDrag {
+    origin_x: i32,
+    origin_y: i32,
+    last_x: i32,
+    last_y: i32,
+    moved: bool,
+}
+
+#[cfg(windows)]
+static ICON_APP: std::sync::Mutex<Option<AppHandle>> = std::sync::Mutex::new(None);
+#[cfg(windows)]
+static ICON_DRAG: std::sync::Mutex<Option<IconDrag>> = std::sync::Mutex::new(None);
+#[cfg(windows)]
+static ICON_CLICK_MS: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
+#[cfg(windows)]
+static MENU_OWNER: std::sync::Mutex<isize> = std::sync::Mutex::new(0);
+#[cfg(windows)]
+static MENU_QUEUED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(windows)]
+static MENU_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(windows)]
+fn install_mouse_hook(app: AppHandle) {
+    {
+        let mut guard = ICON_APP.lock().unwrap_or_else(|err| err.into_inner());
+        if guard.is_some() {
+            return;
+        }
+        *guard = Some(app);
+    }
+    if let Err(err) = ensure_menu_owner() {
+        log::warn!("桌面图标菜单窗口没有建起来: {err}");
+    }
+    let installed = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SetWindowsHookExW(
+            windows::Win32::UI::WindowsAndMessaging::WH_MOUSE_LL,
+            Some(icon_mouse_hook),
+            None,
+            0,
+        )
+    };
+    if installed.is_err() {
+        log::warn!("桌面图标鼠标钩子没有装上，退回窗口内的点击处理");
+    }
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn icon_mouse_hook(
+    code: i32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::Foundation::{LRESULT, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, GetWindowRect, MSLLHOOKSTRUCT, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+        WM_RBUTTONDOWN, WM_RBUTTONUP,
+    };
+
+    if code < 0 || MENU_OPEN.load(std::sync::atomic::Ordering::SeqCst) {
+        return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+    }
+    let app = {
+        let guard = ICON_APP.lock().unwrap_or_else(|err| err.into_inner());
+        (*guard).clone()
+    };
+    let Some(app) = app else {
+        return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+    };
+    let Some(window) = app.get_webview_window("desktop-icon") else {
+        return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+    };
+    let Ok(hwnd) = window.hwnd() else {
+        return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+    };
+    let info = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
+    let mut rect = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut rect) }.is_err() {
+        return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+    }
+    let inside = point_in_rect(
+        info.pt.x,
+        info.pt.y,
+        rect.left,
+        rect.top,
+        rect.right,
+        rect.bottom,
+    );
+    let message = wparam.0 as u32;
+    let pass = || unsafe { CallNextHookEx(None, code, wparam, lparam) };
+
+    if message == WM_LBUTTONDOWN {
+        if !inside {
+            let mut drag = ICON_DRAG.lock().unwrap_or_else(|err| err.into_inner());
+            *drag = None;
+            return pass();
+        }
+        accept_mouse(hwnd);
+        raise_top(hwnd);
+        let mut drag = ICON_DRAG.lock().unwrap_or_else(|err| err.into_inner());
+        *drag = Some(IconDrag {
+            origin_x: info.pt.x,
+            origin_y: info.pt.y,
+            last_x: info.pt.x,
+            last_y: info.pt.y,
+            moved: false,
+        });
+        return LRESULT(1);
+    }
+
+    if message == WM_MOUSEMOVE {
+        let step = {
+            let mut drag = ICON_DRAG.lock().unwrap_or_else(|err| err.into_inner());
+            drag.as_mut().map(|state| {
+                let dx = info.pt.x - state.last_x;
+                let dy = info.pt.y - state.last_y;
+                state.last_x = info.pt.x;
+                state.last_y = info.pt.y;
+                let ox = info.pt.x - state.origin_x;
+                let oy = info.pt.y - state.origin_y;
+                if ox * ox + oy * oy >= 16 {
+                    state.moved = true;
+                }
+                (dx, dy)
+            })
+        };
+        let Some((dx, dy)) = step else {
+            return pass();
+        };
+        let _ = nudge_physical(&app, dx, dy);
+        return LRESULT(1);
+    }
+
+    if message == WM_LBUTTONUP {
+        let state = ICON_DRAG
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .take();
+        let Some(state) = state else {
+            return pass();
+        };
+        let action = {
+            let mut last = ICON_CLICK_MS.lock().unwrap_or_else(|err| err.into_inner());
+            let action = classify_click(state.moved, *last, info.time, 500);
+            *last = match action {
+                ClickAction::Arm => Some(info.time),
+                ClickAction::Open | ClickAction::DragEnd => None,
+            };
+            action
+        };
+        if action == ClickAction::Open {
+            show_main(&app);
+        }
+        return LRESULT(1);
+    }
+
+    if message == WM_RBUTTONDOWN && inside {
+        return LRESULT(1);
+    }
+    if message == WM_RBUTTONUP && inside {
+        let _ = post_icon_menu();
+        return LRESULT(1);
+    }
+    pass()
+}
+
+#[cfg(windows)]
+fn accept_mouse(hwnd: windows::Win32::Foundation::HWND) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CLIPCHILDREN,
+        WS_CLIPSIBLINGS, WS_EX_TRANSPARENT, WS_VISIBLE,
+    };
+
+    unsafe {
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        let cleared = ex & !WS_EX_TRANSPARENT.0;
+        if cleared != ex {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, cleared as isize);
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+        }
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
+        let next = style | WS_VISIBLE.0 | WS_CLIPSIBLINGS.0 | WS_CLIPCHILDREN.0;
+        if next != style {
+            SetWindowLongPtrW(hwnd, GWL_STYLE, next as isize);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn raise_top(hwnd: windows::Win32::Foundation::HWND) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+    };
+
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOP),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+    }
+}
+
+#[cfg(windows)]
 fn place_on_desktop(app: &AppHandle, window: &WebviewWindow) {
     use windows::Win32::UI::WindowsAndMessaging::SetParent;
 
@@ -178,6 +456,8 @@ fn place_on_desktop(app: &AppHandle, window: &WebviewWindow) {
         load_pos(app).unwrap_or_else(|| default_pos(size.width as i32, size.height as i32));
     let (x, y) = clamp_pos(x, y, size.width as i32, size.height as i32);
     let _ = move_to_screen(hwnd, x, y);
+    accept_mouse(hwnd);
+    raise_top(hwnd);
     save_pos(app, x, y);
 }
 
@@ -350,22 +630,242 @@ fn move_to_screen(
 #[cfg(windows)]
 fn nudge(hwnd: windows::Win32::Foundation::HWND, dx: i32, dy: i32) -> windows::core::Result<()> {
     use windows::Win32::Foundation::RECT;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
     unsafe {
         let mut rect = RECT::default();
         GetWindowRect(hwnd, &mut rect)?;
-        let (x, y) = parent_point(hwnd, rect.left + dx, rect.top + dy);
-        SetWindowPos(
-            hwnd,
+        let width = rect.right - rect.left;
+        let height = rect.bottom - rect.top;
+        let (x, y) = clamp_pos(rect.left + dx, rect.top + dy, width, height);
+        move_to_screen(hwnd, x, y)
+    }
+}
+
+#[cfg(windows)]
+const MENU_SHOW: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 1;
+
+#[cfg(windows)]
+fn post_icon_menu() -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+
+    if MENU_QUEUED.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    let raw = *MENU_OWNER.lock().unwrap_or_else(|err| err.into_inner());
+    if raw == 0 {
+        MENU_QUEUED.store(false, Ordering::SeqCst);
+        return Err("菜单窗口还没有准备好".to_string());
+    }
+    let posted = unsafe { PostMessageW(Some(hwnd_from(raw)), MENU_SHOW, WPARAM(0), LPARAM(0)) };
+    if posted.is_err() {
+        MENU_QUEUED.store(false, Ordering::SeqCst);
+        return Err("没能打开桌面图标菜单".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn hwnd_from(raw: isize) -> windows::Win32::Foundation::HWND {
+    windows::Win32::Foundation::HWND(raw as *mut core::ffi::c_void)
+}
+
+#[cfg(windows)]
+fn ensure_menu_owner() -> Result<(), String> {
+    {
+        let current = *MENU_OWNER.lock().unwrap_or_else(|err| err.into_inner());
+        if current != 0 {
+            return Ok(());
+        }
+    }
+    let hwnd = create_menu_owner()?;
+    *MENU_OWNER.lock().unwrap_or_else(|err| err.into_inner()) = hwnd.0 as isize;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn create_menu_owner() -> Result<windows::Win32::Foundation::HWND, String> {
+    use windows::core::w;
+    use windows::Win32::Foundation::HINSTANCE;
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, RegisterClassW, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+        WS_POPUP,
+    };
+
+    let class_name = w!("WhooshRocketIconMenu");
+    let instance = unsafe { GetModuleHandleW(None) }.map_err(|err| err.to_string())?;
+    let class = WNDCLASSW {
+        lpfnWndProc: Some(menu_owner_proc),
+        hInstance: HINSTANCE(instance.0),
+        lpszClassName: class_name,
+        ..Default::default()
+    };
+    unsafe { RegisterClassW(&class) };
+    unsafe {
+        CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED,
+            class_name,
+            w!(""),
+            WS_POPUP,
+            0,
+            0,
+            1,
+            1,
             None,
-            x,
-            y,
-            0,
-            0,
-            SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
+            None,
+            Some(HINSTANCE(instance.0)),
+            None,
         )
+    }
+    .map_err(|err| err.to_string())
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn menu_owner_proc(
+    hwnd: windows::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
+
+    if msg == MENU_SHOW {
+        show_icon_menu(hwnd);
+        return windows::Win32::Foundation::LRESULT(0);
+    }
+    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+#[cfg(windows)]
+fn show_icon_menu(owner: windows::Win32::Foundation::HWND) {
+    use std::sync::atomic::Ordering;
+    use windows::core::w;
+    use windows::Win32::Foundation::{COLORREF, LPARAM, POINT, WPARAM};
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, GetForegroundWindow,
+        GetWindowThreadProcessId, PostMessageW, SetForegroundWindow, SetLayeredWindowAttributes,
+        SetWindowPos, ShowWindow, TrackPopupMenu, HWND_TOPMOST, LWA_ALPHA, MF_STRING,
+        SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+        WM_NULL,
+    };
+
+    if MENU_OPEN.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = ICON_APP
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .clone();
+    let menu = unsafe { CreatePopupMenu() };
+    let Ok(menu) = menu else {
+        MENU_OPEN.store(false, Ordering::SeqCst);
+        MENU_QUEUED.store(false, Ordering::SeqCst);
+        return;
+    };
+    let built = unsafe {
+        AppendMenuW(menu, MF_STRING, 1, w!("打开"))
+            .and_then(|_| AppendMenuW(menu, MF_STRING, 2, w!("退出")))
+    };
+    if built.is_err() {
+        let _ = unsafe { DestroyMenu(menu) };
+        MENU_OPEN.store(false, Ordering::SeqCst);
+        MENU_QUEUED.store(false, Ordering::SeqCst);
+        return;
+    }
+
+    let mut point = POINT { x: 0, y: 0 };
+    unsafe {
+        let _ = GetCursorPos(&mut point);
+        let _ = SetLayeredWindowAttributes(owner, COLORREF(0), 1, LWA_ALPHA);
+        let _ = SetWindowPos(
+            owner,
+            Some(HWND_TOPMOST),
+            point.x,
+            point.y,
+            1,
+            1,
+            SWP_SHOWWINDOW | SWP_NOACTIVATE,
+        );
+        let foreground = GetForegroundWindow();
+        let foreground_thread = GetWindowThreadProcessId(foreground, None);
+        let current = GetCurrentThreadId();
+        let attached = foreground_thread != 0
+            && foreground_thread != current
+            && AttachThreadInput(foreground_thread, current, true).as_bool();
+        let _ = SetForegroundWindow(owner);
+        let selected = TrackPopupMenu(
+            menu,
+            TPM_LEFTALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD,
+            point.x,
+            point.y,
+            None,
+            owner,
+            None,
+        )
+        .0;
+        if attached {
+            let _ = AttachThreadInput(foreground_thread, current, false);
+        }
+        let _ = PostMessageW(Some(owner), WM_NULL, WPARAM(0), LPARAM(0));
+        let _ = ShowWindow(owner, SW_HIDE);
+        let _ = DestroyMenu(menu);
+        MENU_OPEN.store(false, Ordering::SeqCst);
+        MENU_QUEUED.store(false, Ordering::SeqCst);
+        if let Some(app) = app {
+            match icon_menu_action(selected) {
+                Some(IconMenuAction::Open) => show_main(&app),
+                Some(IconMenuAction::Quit) => app.exit(0),
+                None => {}
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        classify_click, icon_menu_action, physical_delta, point_in_rect, ClickAction,
+        IconMenuAction,
+    };
+
+    #[test]
+    fn double_click_opens_when_the_pointer_did_not_drag() {
+        assert_eq!(classify_click(false, None, 1_000, 500), ClickAction::Arm);
+        assert_eq!(
+            classify_click(false, Some(1_000), 1_400, 500),
+            ClickAction::Open
+        );
+        assert_eq!(
+            classify_click(false, Some(1_000), 1_601, 500),
+            ClickAction::Arm
+        );
+        assert_eq!(
+            classify_click(true, Some(1_000), 1_100, 500),
+            ClickAction::DragEnd
+        );
+    }
+
+    #[test]
+    fn dip_delta_converts_with_the_window_scale() {
+        assert_eq!(physical_delta(2.0, -1.2, 1.5), (3, -2));
+        assert_eq!(physical_delta(1.0, 1.0, 0.0), (1, 1));
+    }
+
+    #[test]
+    fn menu_commands_map_to_open_and_quit() {
+        assert_eq!(icon_menu_action(1), Some(IconMenuAction::Open));
+        assert_eq!(icon_menu_action(2), Some(IconMenuAction::Quit));
+        assert_eq!(icon_menu_action(0), None);
+    }
+
+    #[test]
+    fn hit_test_uses_an_exclusive_bottom_right() {
+        assert!(point_in_rect(0, 0, 0, 0, 10, 10));
+        assert!(!point_in_rect(10, 5, 0, 0, 10, 10));
+        assert!(!point_in_rect(5, 10, 0, 0, 10, 10));
     }
 }

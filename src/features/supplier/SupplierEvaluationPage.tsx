@@ -17,7 +17,14 @@ import { AftersaleQualityPanel } from '@/features/supplier/AftersaleQualityPanel
 import { DashboardGrid } from '@/features/supplier/DashboardGrid';
 import { loadInspectLines } from '@/features/supplier/load';
 import { MonthPicker } from '@/features/supplier/MonthPicker';
-import { TimelinessPanel } from '@/features/supplier/TimelinessPanel';
+import {
+  TimelinessPanel,
+  type ArrivalPanelState,
+} from '@/features/supplier/TimelinessPanel';
+import { QuadrantPanel } from '@/features/supplier/QuadrantPanel';
+import { RiskPanel } from '@/features/supplier/RiskPanel';
+import { ScorecardPanel } from '@/features/supplier/ScorecardPanel';
+import { buildPortraits } from '@/features/supplier/portrait';
 import { SelectMenu } from '@/components/shared/SelectMenu';
 import { SuggestInput } from '@/components/shared/SuggestInput';
 import { useKingdeeStore } from '@/store/useKingdeeStore';
@@ -63,15 +70,20 @@ export function SupplierEvaluationPage() {
   const sessionId = useKingdeeStore((state) => state.sessionId);
   const today = useMemo(() => new Date(), []);
   const months = useMemo(() => recentMonths(today), [today]);
+  const thisMonth = months[months.length - 1] ?? '';
   const [lines, setLines] = useState<InspectLine[] | null>(null);
   const [loading, setLoading] = useState(Boolean(sessionId));
   const [error, setError] = useState<string | null>(null);
-  const [supplier, setSupplier] = useState('');
-  const [supplierOp, setSupplierOp] = useState<SupplierMatch>('eq');
-  const [monthFrom, setMonthFrom] = useState('');
-  const [monthTo, setMonthTo] = useState('');
+  const [supplier, setSupplier] = useState('XLS');
+  const [supplierOp, setSupplierOp] = useState<SupplierMatch>('contains');
+  const [monthFrom, setMonthFrom] = useState(thisMonth);
+  const [monthTo, setMonthTo] = useState(thisMonth);
   const [aftersaleSuppliers, setAftersaleSuppliers] = useState<string[]>([]);
   const [arrivalSuppliers, setArrivalSuppliers] = useState<string[]>([]);
+  const [arrival, setArrival] = useState<ArrivalPanelState | null>(null);
+  const handleArrival = useCallback((state: ArrivalPanelState) => {
+    setArrival(state);
+  }, []);
   const handleCatalog = useCallback(
     (catalog: { suppliers: string[]; months: string[] }) => {
       setAftersaleSuppliers((current) =>
@@ -128,6 +140,34 @@ export function SupplierEvaluationPage() {
     ].sort((left, right) => left.localeCompare(right, 'zh'));
     return names.map((name) => ({ value: name, label: name }));
   }, [aftersaleSuppliers, arrivalSuppliers, lines]);
+  const portraits = useMemo(() => {
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    const sources = arrival?.sources;
+    return buildPortraits({
+      inspect: lines ?? [],
+      lines: sources?.lines ?? [],
+      receipts:
+        arrival?.source === 'instock'
+          ? (sources?.instock ?? [])
+          : (sources?.receive ?? []),
+      instock: sources?.instock ?? [],
+      monthFrom,
+      monthTo,
+      months,
+      today: `${year}-${month}-${day}`,
+      graceDays: arrival?.graceDays ?? 0,
+      supplier,
+      supplierOp,
+    });
+  }, [arrival, lines, monthFrom, monthTo, months, supplier, supplierOp, today]);
+  const insightsLoading =
+    Boolean(sessionId) &&
+    (lines == null ||
+      arrival == null ||
+      (arrival.loading && arrival.sources == null));
+  const insightsReady = Boolean(sessionId) && !insightsLoading;
 
   const renderBody = (id: WidgetId) => {
     if (id === 'summary') {
@@ -193,30 +233,58 @@ export function SupplierEvaluationPage() {
           </div>
         </div>
       </section>
-      <header className="mb-4">
-        <h1 className="text-lg font-medium">到货检验分析</h1>
-      </header>
-      {!sessionId ? (
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
-          请先点击右上角「连接金蝶」完成登录。
-        </p>
-      ) : null}
-      {sessionId && loading && lines == null ? (
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
-          正在加载检验单…
-        </p>
-      ) : null}
-      {error ? (
-        <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
-      ) : null}
-      {sessionId && lines != null ? (
-        <DashboardGrid
-          storageKey={LAYOUT_KEY}
-          widgets={WIDGETS}
-          defaultLayout={DEFAULT_LAYOUT}
-          render={renderBody}
-        />
-      ) : null}
+      <nav className="mb-4 flex flex-wrap gap-2" aria-label="供应商评价">
+        {(
+          [
+            ['supplier-inspect', '到货检验'],
+            ['supplier-timeliness', '到货及时'],
+            ['supplier-aftersale', '售后质量'],
+            ['supplier-quadrant', '四象限矩阵'],
+            ['supplier-scorecard', '综合评分'],
+            ['supplier-risk', '风险预警'],
+          ] as const
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            className="rounded-full border border-zinc-200 bg-white px-3 py-1 text-sm text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+            onClick={() =>
+              document.getElementById(id)?.scrollIntoView({
+                behavior: 'smooth',
+                block: 'start',
+              })
+            }
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+      <section id="supplier-inspect" className="scroll-mt-24">
+        <header className="mb-4">
+          <h1 className="text-lg font-medium">到货检验分析</h1>
+        </header>
+        {!sessionId ? (
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">
+            请先点击右上角「连接金蝶」完成登录。
+          </p>
+        ) : null}
+        {sessionId && loading && lines == null ? (
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">
+            正在加载检验单…
+          </p>
+        ) : null}
+        {error ? (
+          <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+        ) : null}
+        {sessionId && lines != null ? (
+          <DashboardGrid
+            storageKey={LAYOUT_KEY}
+            widgets={WIDGETS}
+            defaultLayout={DEFAULT_LAYOUT}
+            render={renderBody}
+          />
+        ) : null}
+      </section>
       <TimelinessPanel
         sessionId={sessionId}
         supplier={supplier}
@@ -226,6 +294,7 @@ export function SupplierEvaluationPage() {
         months={months}
         today={today}
         onCatalog={handleArrivalCatalog}
+        onArrivalState={handleArrival}
       />
       <AftersaleQualityPanel
         supplier={supplier}
@@ -233,6 +302,21 @@ export function SupplierEvaluationPage() {
         monthFrom={monthFrom}
         monthTo={monthTo}
         onCatalog={handleCatalog}
+      />
+      <QuadrantPanel
+        portraits={portraits}
+        ready={insightsReady}
+        loading={insightsLoading}
+      />
+      <ScorecardPanel
+        portraits={portraits}
+        ready={insightsReady}
+        loading={insightsLoading}
+      />
+      <RiskPanel
+        portraits={portraits}
+        ready={insightsReady}
+        loading={insightsLoading}
       />
     </div>
   );

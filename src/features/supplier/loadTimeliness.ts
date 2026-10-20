@@ -141,6 +141,20 @@ function asText(value: unknown): string {
   return String(value);
 }
 
+function asAmount(value: unknown): number | null {
+  if (value == null || value === '') {
+    return null;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value.trim().replaceAll(',', ''));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 function asQty(value: unknown): number {
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : 0;
@@ -229,6 +243,8 @@ function readPurchase(
     materialName: asText(read(fields.materialName)).trim(),
     orderQty: asQty(read(fields.qty)),
     deliveryDate,
+    ...(fields.amount ? { amount: asAmount(read(fields.amount)) } : {}),
+    ...(fields.orderDate ? { orderDate: asDate(read(fields.orderDate)) } : {}),
     excluded: isExcluded([
       asText(read(fields.closeStatus)),
       asText(read(fields.mrpClose)),
@@ -254,6 +270,7 @@ function readReceipt(
     materialNumber: asText(read(fields.materialNumber)).trim(),
     date,
     qty: asQty(read(fields.qty)),
+    ...(fields.amount ? { amount: asAmount(read(fields.amount)) } : {}),
   };
 }
 
@@ -298,7 +315,9 @@ export async function loadArrivalSources(today: Date): Promise<ArrivalSources> {
     purchaseFields.mrpClose,
     purchaseFields.mrpFreeze,
     purchaseFields.mrpTerminate,
-  ];
+    purchaseFields.amount ?? '',
+    purchaseFields.orderDate ?? '',
+  ].filter((key) => key.length > 0);
   const purchaseFilter = [
     "FDocumentStatus = 'C'",
     purchaseFields.cancelStatus ? `${purchaseFields.cancelStatus} = 'A'` : '',
@@ -326,7 +345,8 @@ export async function loadArrivalSources(today: Date): Promise<ArrivalSources> {
     instockFields.billNo,
     instockFields.entryId,
     instockFields.materialNumber,
-  ];
+    instockFields.amount ?? '',
+  ].filter((key) => key.length > 0);
   const [receiveRows, instockRows] = await Promise.all([
     queryRangeRows(
       RECEIVE_FORM,

@@ -29,6 +29,12 @@ export interface ComplaintEvent {
 export interface AftersaleMonth {
   month: string;
   events: ComplaintEvent[];
+  sheet?: AftersaleSheet;
+}
+
+export interface AftersaleSheet {
+  headers: string[];
+  rows: string[][];
 }
 
 export interface SupplierSummary {
@@ -138,6 +144,7 @@ export function loadAftersaleMonths(record: PersistedRecord): AftersaleMonth[] {
     }
     return parsed
       .filter(isAftersaleMonth)
+      .map(sanitizeMonth)
       .sort((left, right) => left.month.localeCompare(right.month));
   } catch {
     return [];
@@ -159,11 +166,11 @@ export async function saveAftersaleMonth(
 function parseSheet(sheet: XLSX.WorkSheet): AftersaleMonth {
   const range = XLSX.utils.decode_range(sheet['!ref'] ?? 'A1');
   const headers: string[] = [];
+  const displayHeaders: string[] = [];
   for (let column = range.s.c; column <= range.e.c; column += 1) {
-    headers[column] = cellString(readCell(sheet, 1, column)).replace(
-      /\s+/g,
-      '',
-    );
+    const label = cellString(readCell(sheet, 1, column)).trim();
+    displayHeaders[column] = label;
+    headers[column] = label.replace(/\s+/g, '');
   }
   const columns = new Map<ColumnKey, number>();
   const missing: string[] = [];
@@ -180,11 +187,21 @@ function parseSheet(sheet: XLSX.WorkSheet): AftersaleMonth {
   }
 
   const events: ComplaintEvent[] = [];
+  const sheetRows: string[][] = [];
   const months = new Set<string>();
   for (let row = 2; row <= range.e.r; row += 1) {
     if (rowIsEmpty(sheet, row, range)) {
       continue;
     }
+    const cells: string[] = [];
+    for (let column = range.s.c; column <= range.e.c; column += 1) {
+      cells.push(
+        cellString(readCell(sheet, row, column))
+          .replace(/\r?\n/g, ' ')
+          .trim(),
+      );
+    }
+    sheetRows.push(cells);
     const event = readEvent(sheet, row, columns);
     if (!event) {
       continue;
@@ -200,7 +217,11 @@ function parseSheet(sheet: XLSX.WorkSheet): AftersaleMonth {
       `一份表格只能包含一个年月，当前有 ${[...months].sort().join('、')}。`,
     );
   }
-  return { month: [...months][0] ?? '', events };
+  return {
+    month: [...months][0] ?? '',
+    events,
+    sheet: trimSheet(displayHeaders, sheetRows),
+  };
 }
 
 function readEvent(
@@ -476,6 +497,75 @@ function cellString(cell: RawCell): string {
     return '';
   }
   return String(cell.value);
+}
+
+function trimSheet(headers: string[], rows: string[][]): AftersaleSheet {
+  let last = headers.length - 1;
+  while (
+    last >= 0 &&
+    !headers[last] &&
+    rows.every((row) => !(row[last] ?? '').trim())
+  ) {
+    last -= 1;
+  }
+  const width = Math.max(last + 1, 0);
+  return {
+    headers: headers.slice(0, width),
+    rows: rows.map((row) => row.slice(0, width)),
+  };
+}
+
+export function aftersalePreview(month: AftersaleMonth): AftersaleSheet {
+  if (month.sheet && month.sheet.headers.length > 0) {
+    return month.sheet;
+  }
+  return {
+    headers: [
+      '厂家',
+      '数量（个）',
+      '产品问题大类',
+      '我司赔付金额',
+      '厂家赔付金额',
+      '结案',
+    ],
+    rows: month.events.map((event) => [
+      event.supplier,
+      event.quantity == null ? '' : String(event.quantity),
+      event.category,
+      event.companyPay == null ? '' : String(event.companyPay),
+      event.factoryPay == null ? '' : String(event.factoryPay),
+      event.pending ? '待跟进' : '',
+    ]),
+  };
+}
+
+function sanitizeMonth(month: AftersaleMonth): AftersaleMonth {
+  const sheet = normalizeSheet(month.sheet);
+  if (!sheet) {
+    return { month: month.month, events: month.events };
+  }
+  return { month: month.month, events: month.events, sheet };
+}
+
+function normalizeSheet(value: unknown): AftersaleSheet | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const record = value as Partial<AftersaleSheet>;
+  if (!Array.isArray(record.headers) || !Array.isArray(record.rows)) {
+    return undefined;
+  }
+  if (record.headers.some((header) => typeof header !== 'string')) {
+    return undefined;
+  }
+  const rows: string[][] = [];
+  for (const row of record.rows) {
+    if (!Array.isArray(row) || row.some((cell) => typeof cell !== 'string')) {
+      return undefined;
+    }
+    rows.push(row);
+  }
+  return { headers: record.headers, rows };
 }
 
 function isAftersaleMonth(value: unknown): value is AftersaleMonth {

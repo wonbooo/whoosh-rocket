@@ -104,55 +104,66 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[520px] gap-5 p-6">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[calc(100vh-2rem)] max-w-[520px] flex-col gap-4 overflow-hidden p-6">
+        <DialogHeader className="shrink-0">
           <DialogTitle className="text-[22px]">设置</DialogTitle>
-          <DialogDescription>
-            配置金蝶连接信息，保存后点击「连接金蝶」登录
-          </DialogDescription>
+          <DialogDescription>配置金蝶连接。</DialogDescription>
         </DialogHeader>
-        <form className="space-y-4" onSubmit={handleSubmit(onSubmit)}>
-          <Field
-            id="serverUrl"
-            label="金蝶URL"
-            error={errors.serverUrl?.message}
-          >
-            <Input
+        <form
+          className="flex min-h-0 flex-col overflow-hidden"
+          onSubmit={handleSubmit(onSubmit)}
+        >
+          <div className="space-y-4 overflow-y-auto pr-1">
+            <Field
               id="serverUrl"
-              autoFocus={ready}
-              disabled={!ready}
-              className={fieldClass}
-              {...register('serverUrl')}
-            />
-          </Field>
-          <Field id="acctName" label="账套ID" error={errors.acctName?.message}>
-            <Input
+              label="金蝶URL"
+              error={errors.serverUrl?.message}
+            >
+              <Input
+                id="serverUrl"
+                autoFocus={ready}
+                disabled={!ready}
+                className={fieldClass}
+                {...register('serverUrl')}
+              />
+            </Field>
+            <Field
               id="acctName"
-              disabled={!ready}
-              className={fieldClass}
-              {...register('acctName')}
-            />
-          </Field>
-          <Field id="username" label="用户名" error={errors.username?.message}>
-            <Input
+              label="账套ID"
+              error={errors.acctName?.message}
+            >
+              <Input
+                id="acctName"
+                disabled={!ready}
+                className={fieldClass}
+                {...register('acctName')}
+              />
+            </Field>
+            <Field
               id="username"
-              autoComplete="username"
-              disabled={!ready}
-              className={fieldClass}
-              {...register('username')}
-            />
-          </Field>
-          <Field id="password" label="密码" error={errors.password?.message}>
-            <Input
-              id="password"
-              type="password"
-              autoComplete="current-password"
-              disabled={!ready}
-              className={fieldClass}
-              {...register('password')}
-            />
-          </Field>
-          <DialogFooter className="pt-2">
+              label="用户名"
+              error={errors.username?.message}
+            >
+              <Input
+                id="username"
+                autoComplete="username"
+                disabled={!ready}
+                className={fieldClass}
+                {...register('username')}
+              />
+            </Field>
+            <Field id="password" label="密码" error={errors.password?.message}>
+              <Input
+                id="password"
+                type="password"
+                autoComplete="current-password"
+                disabled={!ready}
+                className={fieldClass}
+                {...register('password')}
+              />
+            </Field>
+          </div>
+          <DialogFooter className="shrink-0 pt-4">
             <Button
               type="button"
               variant="outline"

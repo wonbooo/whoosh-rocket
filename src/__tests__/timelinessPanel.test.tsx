@@ -137,6 +137,7 @@ describe('TimelinessPanel', () => {
     expect(within(detail as HTMLElement).getByText('3.0')).toBeInTheDocument();
 
     const grace = screen.getByLabelText('宽限天数');
+    expect(grace).toHaveValue(2);
     await user.clear(grace);
     await user.type(grace, '3');
     expect(screen.getByTestId('overall-timeliness-rate')).toHaveTextContent(
