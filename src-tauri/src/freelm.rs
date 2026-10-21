@@ -195,26 +195,14 @@ fn lock_owned() -> std::sync::MutexGuard<'static, Option<OwnedServer>> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Make sure FreeLM is serving as soon as the app opens, instead of waiting for
-/// the first request. Node is installed silently first when the machine has none.
+/// Make sure FreeLM is serving as soon as the app opens. The installer starts it
+/// after installing Node.js, so a normal launch only checks that it answers and
+/// starts it when it does not. The check runs off the UI thread and never waits
+/// for the server to be ready, so the window renders immediately.
 pub fn start_on_launch(app: AppHandle) {
     std::thread::spawn(move || {
-        let log_path = freelm_log(&app);
-        if let Err(err) = install_node_if_missing(&log_path) {
-            log::warn!("{err}");
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-                .and_then(|mut file| {
-                    use std::io::Write;
-                    writeln!(file, "{err}")
-                });
-            return;
-        }
         let url = "http://127.0.0.1:4000/v1/chat/completions";
-        let started = tauri::async_runtime::block_on(ensure_local_server(&app, url, "freelm"));
-        if let Err(err) = started {
+        if let Err(err) = tauri::async_runtime::block_on(ensure_local_server(&app, url, "freelm")) {
             log::warn!("{err}");
         }
     });
@@ -228,17 +216,6 @@ pub fn adopt_existing(app: &AppHandle) {
     };
     let mut guard = lock_owned();
     adopt(&mut guard, &path);
-}
-
-#[cfg(test)]
-fn shutdown() {
-    let owned = {
-        let mut guard = lock_owned();
-        guard.take()
-    };
-    if let Some(owned) = owned {
-        stop_owned(owned);
-    }
 }
 
 #[tauri::command]
@@ -342,16 +319,6 @@ async fn ensure_local_server(app: &AppHandle, chat_url: &str, api_key: &str) -> 
     {
         let mut guard = lock_owned();
         reap_if_exited(&mut guard);
-        if matches!(guard.as_ref(), Some(owned) if owned.child.is_none()) {
-            if let Some(owned) = guard.take() {
-                drop(guard);
-                stop_owned(owned);
-            }
-        }
-    }
-    {
-        let mut guard = lock_owned();
-        reap_if_exited(&mut guard);
         if !owned_running(&guard) {
             let runtime = find_runtime(app)?;
             let child = spawn_server(&runtime, port, api_key, &log_path)?;
@@ -364,25 +331,7 @@ async fn ensure_local_server(app: &AppHandle, chat_url: &str, api_key: &str) -> 
             });
         }
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
-    while std::time::Instant::now() < deadline {
-        if health_ok(chat_url).await {
-            return Ok(());
-        }
-        let mut guard = lock_owned();
-        if let Some(status) = reap_if_exited(&mut guard) {
-            return Err(format!(
-                "FreeLM 进程已退出（{status}）。{}",
-                log_tail(&log_path)
-            ));
-        }
-        drop(guard);
-        std::thread::sleep(std::time::Duration::from_millis(400));
-    }
-    Err(format!(
-        "已启动应用内的 FreeLM，但 45 秒内没有就绪。{}",
-        log_tail(&log_path)
-    ))
+    Ok(())
 }
 
 fn http_client(timeout_secs: u64) -> Result<reqwest::Client, String> {
@@ -548,116 +497,10 @@ fn node_on_path() -> Option<PathBuf> {
 
 fn missing_node_message() -> String {
     if cfg!(windows) {
-        "这台电脑没有 Node.js，自动安装也没有成功。请联网后重新打开应用。".into()
+        "这台电脑没有 Node.js。请重新运行安装程序，它会在安装时自动安装 Node.js。".into()
     } else {
         "这台电脑没有 Node.js，无法启动 FreeLM。".into()
     }
-}
-
-/// The current Node release line FreeLM runs on. Node 20 is the oldest the
-/// bundled package supports, and it stays on the long-term line.
-const NODE_MAJOR: &str = "24";
-
-/// A silent install of the official Node.js build, or `None` where this app
-/// does not install one.
-fn node_installer_url() -> Option<String> {
-    #[cfg(all(windows, target_arch = "x86_64"))]
-    {
-        Some(format!(
-            "https://nodejs.org/dist/latest-v{NODE_MAJOR}.x/node-v{NODE_MAJOR}-x64.msi"
-        ))
-    }
-    #[cfg(not(all(windows, target_arch = "x86_64")))]
-    {
-        None
-    }
-}
-
-/// Arguments that make the official MSI install without any window, for the
-/// current user only, and add node.exe to PATH.
-fn node_install_arguments(installer: &Path) -> Vec<String> {
-    vec![
-        "/i".into(),
-        installer.to_string_lossy().into_owned(),
-        "/qn".into(),
-        "/norestart".into(),
-        "ALLUSERS=".into(),
-        "ADDLOCAL=ALL".into(),
-    ]
-}
-
-/// Download and install Node when the machine has none. Runs off the UI thread
-/// because the download and the installer both take a while.
-fn install_node_if_missing(log_path: &Path) -> Result<(), String> {
-    if locate_node().is_ok() {
-        return Ok(());
-    }
-    let Some(url) = node_installer_url() else {
-        return Err(missing_node_message());
-    };
-    let dir = log_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(std::env::temp_dir);
-    let _ = std::fs::create_dir_all(&dir);
-    let installer = dir.join("node-setup.msi");
-    download_file(&url, &installer)?;
-    let status = run_installer(&installer)?;
-    let _ = std::fs::remove_file(&installer);
-    if !status.success() {
-        return Err(format!(
-            "Node.js 静默安装失败（退出码 {}）。",
-            status
-                .code()
-                .map(|code| code.to_string())
-                .unwrap_or_else(|| "未知".into())
-        ));
-    }
-    if locate_node().is_err() {
-        return Err(missing_node_message());
-    }
-    Ok(())
-}
-
-fn download_file(url: &str, dest: &Path) -> Result<(), String> {
-    let response = reqwest::blocking::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .timeout(std::time::Duration::from_secs(600))
-        .build()
-        .map_err(|err| format!("无法下载 Node.js：{err}"))?
-        .get(url)
-        .send()
-        .map_err(|err| format!("无法下载 Node.js：{err}"))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "无法下载 Node.js：服务器返回 {}",
-            response.status()
-        ));
-    }
-    let bytes = response
-        .bytes()
-        .map_err(|err| format!("无法下载 Node.js：{err}"))?;
-    if bytes.len() < 1_000_000 {
-        return Err("下载到的 Node.js 安装包不完整。".into());
-    }
-    std::fs::write(dest, &bytes).map_err(|err| format!("无法保存 Node.js 安装包：{err}"))
-}
-
-fn run_installer(installer: &Path) -> Result<std::process::ExitStatus, String> {
-    let mut command = Command::new("msiexec");
-    command
-        .args(node_install_arguments(installer))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-    }
-    command
-        .status()
-        .map_err(|err| format!("没能启动 Node.js 安装程序：{err}"))
 }
 
 fn missing_runtime_message() -> String {
@@ -769,27 +612,6 @@ fn reap_if_exited(guard: &mut Option<OwnedServer>) -> Option<String> {
     None
 }
 
-fn stop_owned(mut owned: OwnedServer) {
-    if let Some(child) = owned.child.take() {
-        // Dropping the handle would kill the process on Windows. Forgetting it
-        // leaves the server running until the machine shuts down.
-        std::mem::forget(child);
-    }
-}
-
-fn log_tail(path: &Path) -> String {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return String::new();
-    };
-    let text = text.trim();
-    if text.is_empty() {
-        return String::new();
-    }
-    let tail: String = text.chars().rev().take(800).collect();
-    let tail: String = tail.chars().rev().collect();
-    format!(" {tail}")
-}
-
 fn process_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
@@ -816,8 +638,7 @@ fn process_alive(pid: u32) -> bool {
 mod tests {
     use super::{
         chat_completions_url, completion_text, health_url, is_loopback_url, is_our_runtime_image,
-        listen_port, node_install_arguments, node_installer_url, plain_windows_path,
-        remote_status_message, serve_arguments, shutdown, text_from_body,
+        listen_port, plain_windows_path, remote_status_message, serve_arguments, text_from_body,
     };
     use serde_json::json;
     use std::path::Path;
@@ -874,7 +695,6 @@ mod tests {
         assert!(!args.iter().any(|arg| arg == "npx"));
         assert!(is_our_runtime_image(r"C:\Program Files\nodejs\node.exe"));
         assert!(!is_our_runtime_image(r"C:\Windows\System32\notepad.exe"));
-        shutdown();
     }
 
     #[test]
@@ -891,19 +711,6 @@ mod tests {
                 plain_windows_path(Path::new(r"\\?\UNC\server\share\node.exe")),
                 Path::new(r"\\server\share\node.exe")
             );
-        }
-    }
-
-    #[test]
-    fn node_installer_is_silent_and_per_user() {
-        let args = node_install_arguments(Path::new(r"C:\temp\node-setup.msi"));
-        assert!(args.iter().any(|arg| arg == "/qn"));
-        assert!(args.iter().any(|arg| arg == "ALLUSERS="));
-        assert!(args.iter().any(|arg| arg.contains("node-setup.msi")));
-        let url = node_installer_url().unwrap_or_default();
-        if !url.is_empty() {
-            assert!(url.starts_with("https://nodejs.org/dist/"));
-            assert!(url.ends_with(".msi"));
         }
     }
 

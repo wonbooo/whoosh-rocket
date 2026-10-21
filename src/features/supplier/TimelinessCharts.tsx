@@ -17,29 +17,35 @@ function isDark(): boolean {
   return document.documentElement.classList.contains('dark');
 }
 
-const LATE_SERIES = ['延迟数量', '未到数量'] as const;
-const MONTH_SERIES = ['及时数量', '延迟数量', '未到数量'] as const;
+const LATE_SERIES = ['逾期已交货', '逾期未交货', '准时未交货'] as const;
+const MONTH_SERIES = [
+  '准时已交货',
+  '逾期已交货',
+  '准时未交货',
+  '逾期未交货',
+] as const;
 const SERIES_COLOR: Record<string, string> = {
-  及时数量: '#16A34A',
-  延迟数量: '#EA580C',
-  未到数量: '#E11D48',
+  准时已交货: '#16A34A',
+  逾期已交货: '#EA580C',
+  准时未交货: '#0284C7',
+  逾期未交货: '#E11D48',
 };
 
 function lateChartLabel(bars: LateBar[]): string {
   const body = bars
     .map(
       (bar) =>
-        `${bar.name} 延迟 ${formatQty(bar.lateQty)}、未到 ${formatQty(bar.undeliveredQty)}`,
+        `${bar.name} 逾期已交货 ${formatQty(bar.lateQty)}、逾期未交货 ${formatQty(bar.overdueQty)}、准时未交货 ${formatQty(bar.pendingQty)}`,
     )
     .join('、');
-  return `延迟与未到：${body}`;
+  return `逾期与未交货：${body}`;
 }
 
 function monthChartLabel(bars: MonthBar[]): string {
   const body = bars
     .map(
       (bar) =>
-        `${bar.month} 及时 ${formatQty(bar.onTimeQty)}、延迟 ${formatQty(bar.lateQty)}、未到 ${formatQty(bar.undeliveredQty)}`,
+        `${bar.month} 准时已交货 ${formatQty(bar.onTimeQty)}、逾期已交货 ${formatQty(bar.lateQty)}、准时未交货 ${formatQty(bar.pendingQty)}、逾期未交货 ${formatQty(bar.overdueQty)}`,
     )
     .join('、');
   return `月度到货结构：${body}`;
@@ -50,7 +56,12 @@ function latePoints(bars: LateBar[]): StackPoint[] {
     LATE_SERIES.map((series) => ({
       name: bar.name,
       series,
-      value: series === '延迟数量' ? bar.lateQty : bar.undeliveredQty,
+      value:
+        series === '逾期已交货'
+          ? bar.lateQty
+          : series === '逾期未交货'
+            ? bar.overdueQty
+            : bar.pendingQty,
     })),
   );
 }
@@ -61,11 +72,13 @@ function monthPoints(bars: MonthBar[]): StackPoint[] {
       name: bar.month,
       series,
       value:
-        series === '及时数量'
+        series === '准时已交货'
           ? bar.onTimeQty
-          : series === '延迟数量'
+          : series === '逾期已交货'
             ? bar.lateQty
-            : bar.undeliveredQty,
+            : series === '准时未交货'
+              ? bar.pendingQty
+              : bar.overdueQty,
     })),
   );
 }

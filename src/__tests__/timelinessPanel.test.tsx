@@ -120,7 +120,9 @@ describe('TimelinessPanel', () => {
       ),
     );
     expect(
-      screen.getByRole('img', { name: /延迟与未到：乙供 延迟 0、未到 2/ }),
+      screen.getByRole('img', {
+        name: /逾期与未交货：乙供 逾期已交货 0、逾期未交货 0、准时未交货 2/,
+      }),
     ).toBeInTheDocument();
 
     await user.selectOptions(screen.getByLabelText('实际到货日期'), 'instock');
@@ -129,7 +131,9 @@ describe('TimelinessPanel', () => {
       '0.00%',
     );
     expect(
-      screen.getByRole('img', { name: /延迟与未到：甲供 延迟 10、未到 0/ }),
+      screen.getByRole('img', {
+        name: /逾期与未交货：甲供 逾期已交货 10、逾期未交货 0、准时未交货 0/,
+      }),
     ).toBeInTheDocument();
     const detail = screen
       .getByRole('heading', { name: '订单到货明细' })

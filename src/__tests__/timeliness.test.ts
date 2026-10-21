@@ -108,8 +108,10 @@ describe('evaluateTimeliness', () => {
       dueQty: 112,
       onTimeQty: 40,
       lateQty: 40,
+      pendingQty: 0,
+      overdueQty: 32,
       undeliveredQty: 32,
-      averageDelayDays: 3.5,
+      averageDelayDays: (4 * 30 + 2 * 10 + 17 * 30 + 33 * 2) / 72,
     });
     expect(jia?.rate).toBeCloseTo(40 / 112);
     expect(result.suppliers.map((row) => row.supplier)).toEqual([
@@ -128,41 +130,45 @@ describe('evaluateTimeliness', () => {
         row.billNo,
         row.actualDate,
         row.lateQty,
-        row.undeliveredQty,
+        row.pendingQty,
+        row.overdueQty,
         row.delayDays,
       ]),
     ).toEqual([
-      ['PO-1', '2026-10-05', 30, 0, 4],
-      ['PO-2', '2026-10-12', 10, 0, 2],
-      ['PO-1', '', 0, 30, null],
-      ['PO-4', '', 0, 6, null],
-      ['PO-3', '', 0, 5, null],
-      ['PO-9', '', 0, 2, null],
-      ['PO-1', '2026-09-28', 0, 0, null],
+      ['PO-9', '', 0, 0, 2, 33],
+      ['PO-1', '', 0, 0, 30, 17],
+      ['PO-1', '2026-10-05', 30, 0, 0, 4],
+      ['PO-2', '2026-10-12', 10, 0, 0, 2],
+      ['PO-4', '', 0, 0, 6, 1],
+      ['PO-3', '', 0, 5, 0, null],
+      ['PO-1', '2026-09-28', 0, 0, 0, null],
     ]);
 
     expect(
-      result.overdue.map((row) => [row.billNo, row.undeliveredQty]),
+      result.overdue.map((row) => [row.billNo, row.overdueQty, row.delayDays]),
     ).toEqual([
-      ['PO-9', 2],
-      ['PO-1', 30],
-      ['PO-4', 6],
+      ['PO-9', 2, 33],
+      ['PO-1', 30, 17],
+      ['PO-4', 6, 1],
     ]);
     expect(result.lateBars.map((row) => row.name)).toEqual(['甲供', '乙供']);
     expect(result.lateBars[0]).toMatchObject({
       lateQty: 40,
-      undeliveredQty: 32,
+      pendingQty: 0,
+      overdueQty: 32,
     });
     expect(
       result.monthBars.find((row) => row.month === '2026-10'),
     ).toMatchObject({
       onTimeQty: 40,
       lateQty: 40,
+      pendingQty: 5,
+      overdueQty: 36,
       undeliveredQty: 41,
     });
   });
 
-  it('treats a receipt inside the grace window as on time and keeps delay days from the delivery date', () => {
+  it('counts a receipt past the grace window as late and an open shortfall past it as overdue', () => {
     const result = evaluateTimeliness({
       lines: [line({ orderQty: 10 })],
       receipts: [receipt({ date: '2026-10-03', qty: 10 })],
@@ -172,7 +178,8 @@ describe('evaluateTimeliness', () => {
     expect(result.suppliers[0]).toMatchObject({
       onTimeQty: 10,
       lateQty: 0,
-      undeliveredQty: 0,
+      pendingQty: 0,
+      overdueQty: 0,
       averageDelayDays: null,
       rate: 1,
     });
@@ -188,6 +195,23 @@ describe('evaluateTimeliness', () => {
       lateQty: 10,
       averageDelayDays: 2,
     });
+
+    const open = evaluateTimeliness({
+      lines: [line({ orderQty: 10 })],
+      receipts: [],
+      graceDays: 2,
+      today,
+    });
+    expect(open.suppliers[0]).toMatchObject({
+      onTimeQty: 0,
+      lateQty: 0,
+      pendingQty: 0,
+      overdueQty: 10,
+      averageDelayDays: 17,
+    });
+    expect(open.overdue).toEqual([
+      expect.objectContaining({ overdueQty: 10, delayDays: 17 }),
+    ]);
   });
 
   it('caps allocated quantity at the order quantity and matches by entry id', () => {
@@ -222,7 +246,7 @@ describe('evaluateTimeliness', () => {
     ]);
     const second = result.details.filter((row) => row.entryId === 'E2');
     expect(second).toEqual([
-      expect.objectContaining({ undeliveredQty: 4, onTimeQty: 0, lateQty: 0 }),
+      expect.objectContaining({ overdueQty: 4, onTimeQty: 0, lateQty: 0 }),
     ]);
   });
 
@@ -235,7 +259,7 @@ describe('evaluateTimeliness', () => {
     });
     expect(result.suppliers[0]).toMatchObject({
       onTimeQty: 5,
-      undeliveredQty: 0,
+      overdueQty: 0,
     });
   });
 

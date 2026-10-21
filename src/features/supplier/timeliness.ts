@@ -32,6 +32,8 @@ export interface TimelinessDetail {
   actualDate: string;
   onTimeQty: number;
   lateQty: number;
+  pendingQty: number;
+  overdueQty: number;
   undeliveredQty: number;
   delayDays: number | null;
 }
@@ -41,6 +43,8 @@ export interface SupplierTimeliness {
   dueQty: number;
   onTimeQty: number;
   lateQty: number;
+  pendingQty: number;
+  overdueQty: number;
   undeliveredQty: number;
   rate: number | null;
   averageDelayDays: number | null;
@@ -59,6 +63,8 @@ export interface SupplierMonthRate {
 export interface LateBar {
   name: string;
   lateQty: number;
+  pendingQty: number;
+  overdueQty: number;
   undeliveredQty: number;
 }
 
@@ -66,6 +72,8 @@ export interface MonthBar {
   month: string;
   onTimeQty: number;
   lateQty: number;
+  pendingQty: number;
+  overdueQty: number;
   undeliveredQty: number;
 }
 
@@ -76,7 +84,9 @@ export interface OverdueLine {
   materialName: string;
   deliveryDate: string;
   orderQty: number;
+  overdueQty: number;
   undeliveredQty: number;
+  delayDays: number | null;
 }
 
 export interface TimelinessEvaluation {
@@ -96,7 +106,8 @@ interface AllocatedLine {
   month: string;
   onTimeQty: number;
   lateQty: number;
-  undeliveredQty: number;
+  pendingQty: number;
+  overdueQty: number;
   delayWeight: number;
   details: TimelinessDetail[];
 }
@@ -216,21 +227,24 @@ function allocate(
   let lateQty = 0;
   let delayWeight = 0;
   const details: TimelinessDetail[] = [];
+  const base = {
+    supplier: line.supplier,
+    billNo: line.billNo,
+    entryId: line.entryId,
+    materialNumber: line.materialNumber,
+    materialName: line.materialName,
+    orderQty: line.orderQty,
+    deliveryDate: line.deliveryDate,
+    month,
+  };
   for (const receipt of matchingReceipts(line, receipts, today)) {
+    if (remaining <= 0) {
+      break;
+    }
     const take = Math.min(receipt.qty, remaining);
     if (take <= 0) {
       continue;
     }
-    const base = {
-      supplier: line.supplier,
-      billNo: line.billNo,
-      entryId: line.entryId,
-      materialNumber: line.materialNumber,
-      materialName: line.materialName,
-      orderQty: line.orderQty,
-      deliveryDate: line.deliveryDate,
-      month,
-    };
     if (receipt.date <= deadline) {
       onTimeQty += take;
       details.push({
@@ -238,6 +252,8 @@ function allocate(
         actualDate: receipt.date,
         onTimeQty: take,
         lateQty: 0,
+        pendingQty: 0,
+        overdueQty: 0,
         undeliveredQty: 0,
         delayDays: null,
       });
@@ -250,27 +266,36 @@ function allocate(
         actualDate: receipt.date,
         onTimeQty: 0,
         lateQty: take,
+        pendingQty: 0,
+        overdueQty: 0,
         undeliveredQty: 0,
         delayDays,
       });
     }
     remaining -= take;
   }
+  let pendingQty = 0;
+  let overdueQty = 0;
   if (remaining > 0) {
+    if (today <= deadline) {
+      pendingQty = remaining;
+    } else {
+      overdueQty = remaining;
+    }
+    const delayDays =
+      today > deadline ? daysBetween(line.deliveryDate, today) : null;
+    if (delayDays != null) {
+      delayWeight += delayDays * overdueQty;
+    }
     details.push({
-      supplier: line.supplier,
-      billNo: line.billNo,
-      entryId: line.entryId,
-      materialNumber: line.materialNumber,
-      materialName: line.materialName,
-      orderQty: line.orderQty,
-      deliveryDate: line.deliveryDate,
-      month,
+      ...base,
       actualDate: '',
       onTimeQty: 0,
       lateQty: 0,
+      pendingQty,
+      overdueQty,
       undeliveredQty: remaining,
-      delayDays: null,
+      delayDays,
     });
   }
   return {
@@ -278,7 +303,8 @@ function allocate(
     month,
     onTimeQty,
     lateQty,
-    undeliveredQty: remaining,
+    pendingQty,
+    overdueQty,
     delayWeight,
     details,
   };
@@ -301,8 +327,10 @@ function compareDetails(
   left: TimelinessDetail,
   right: TimelinessDetail,
 ): number {
-  const leftProblem = left.lateQty > 0 || left.undeliveredQty > 0 ? 0 : 1;
-  const rightProblem = right.lateQty > 0 || right.undeliveredQty > 0 ? 0 : 1;
+  const leftProblem =
+    left.lateQty > 0 || left.overdueQty > 0 || left.pendingQty > 0 ? 0 : 1;
+  const rightProblem =
+    right.lateQty > 0 || right.overdueQty > 0 || right.pendingQty > 0 ? 0 : 1;
   if (leftProblem !== rightProblem) {
     return leftProblem - rightProblem;
   }
@@ -311,8 +339,8 @@ function compareDetails(
   if (leftDelay !== rightDelay) {
     return rightDelay - leftDelay;
   }
-  if (left.undeliveredQty !== right.undeliveredQty) {
-    return right.undeliveredQty - left.undeliveredQty;
+  if (left.overdueQty !== right.overdueQty) {
+    return right.overdueQty - left.overdueQty;
   }
   const bySupplier = left.supplier.localeCompare(right.supplier, 'zh');
   if (bySupplier !== 0) {
@@ -371,19 +399,20 @@ export function evaluateTimeliness(input: {
       const dueQty = rows.reduce((sum, row) => sum + row.line.orderQty, 0);
       const onTimeQty = rows.reduce((sum, row) => sum + row.onTimeQty, 0);
       const lateQty = rows.reduce((sum, row) => sum + row.lateQty, 0);
-      const undeliveredQty = rows.reduce(
-        (sum, row) => sum + row.undeliveredQty,
-        0,
-      );
+      const pendingQty = rows.reduce((sum, row) => sum + row.pendingQty, 0);
+      const overdueQty = rows.reduce((sum, row) => sum + row.overdueQty, 0);
       const delayWeight = rows.reduce((sum, row) => sum + row.delayWeight, 0);
+      const delayedQty = lateQty + overdueQty;
       return {
         supplier: name,
         dueQty,
         onTimeQty,
         lateQty,
-        undeliveredQty,
+        pendingQty,
+        overdueQty,
+        undeliveredQty: pendingQty + overdueQty,
         rate: ratio(onTimeQty, dueQty),
-        averageDelayDays: lateQty === 0 ? null : delayWeight / lateQty,
+        averageDelayDays: delayedQty === 0 ? null : delayWeight / delayedQty,
       };
     })
     .sort(compareSuppliers);
@@ -410,9 +439,7 @@ export function evaluateTimeliness(input: {
 
   const details = allocated.flatMap((row) => row.details).sort(compareDetails);
   const overdue = allocated
-    .filter(
-      (row) => row.undeliveredQty > 0 && row.line.deliveryDate < input.today,
-    )
+    .filter((row) => row.overdueQty > 0)
     .map((row) => ({
       supplier: row.line.supplier,
       billNo: row.line.billNo,
@@ -420,7 +447,9 @@ export function evaluateTimeliness(input: {
       materialName: row.line.materialName,
       deliveryDate: row.line.deliveryDate,
       orderQty: row.line.orderQty,
-      undeliveredQty: row.undeliveredQty,
+      overdueQty: row.overdueQty,
+      undeliveredQty: row.overdueQty,
+      delayDays: daysBetween(row.line.deliveryDate, input.today),
     }))
     .sort((left, right) => {
       const byDate = left.deliveryDate.localeCompare(right.deliveryDate);
@@ -441,19 +470,27 @@ export function evaluateTimeliness(input: {
     details,
     overdue,
     lateBars: suppliers
-      .filter((row) => row.lateQty > 0 || row.undeliveredQty > 0)
+      .filter(
+        (row) => row.lateQty > 0 || row.pendingQty > 0 || row.overdueQty > 0,
+      )
       .map((row) => ({
         name: row.supplier,
         lateQty: row.lateQty,
+        pendingQty: row.pendingQty,
+        overdueQty: row.overdueQty,
         undeliveredQty: row.undeliveredQty,
       })),
     monthBars: months.map((item) => {
       const rows = allocated.filter((row) => row.month === item);
+      const pendingQty = rows.reduce((sum, row) => sum + row.pendingQty, 0);
+      const overdueQty = rows.reduce((sum, row) => sum + row.overdueQty, 0);
       return {
         month: item,
         onTimeQty: rows.reduce((sum, row) => sum + row.onTimeQty, 0),
         lateQty: rows.reduce((sum, row) => sum + row.lateQty, 0),
-        undeliveredQty: rows.reduce((sum, row) => sum + row.undeliveredQty, 0),
+        pendingQty,
+        overdueQty,
+        undeliveredQty: pendingQty + overdueQty,
       };
     }),
   };

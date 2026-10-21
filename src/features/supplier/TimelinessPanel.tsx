@@ -35,7 +35,7 @@ const WIDGETS: { id: WidgetId; title: string }[] = [
   { id: 'rates', title: '近6个月供应商到货及时率' },
   { id: 'qty', title: '到货数量' },
   { id: 'detail', title: '订单到货明细' },
-  { id: 'late', title: '延迟与未到' },
+  { id: 'late', title: '逾期与未交货' },
   { id: 'months', title: '月度到货结构' },
   { id: 'overdue', title: '逾期未到' },
 ];
@@ -278,7 +278,8 @@ export function TimelinessPanel({
         ) : null}
       </div>
       <p className="mb-3 text-sm text-zinc-500 dark:text-zinc-400">
-        按交货日期归月，按数量计算。实际到货日期取当前选择的单据，宽限天数只改变及时和延迟的划分。
+        按交货日期归月，按数量计算。及时率 = 准时已交货数量（含宽限天数内）/
+        订单数量。未到数量按今天是否超过宽限截止日拆成准时未交货和逾期未交货，逾期天数对已到货按实际到货日、对逾期未交货按今天计算。
       </p>
       {!sessionId ? (
         <p className="text-sm text-zinc-500 dark:text-zinc-400">
@@ -334,7 +335,7 @@ function renderWidget(id: WidgetId, result: TimelinessEvaluation): ReactNode {
   if (id === 'late') {
     return result.lateBars.length === 0 ? (
       <p className="text-sm text-zinc-500 dark:text-zinc-400">
-        没有延迟或未到。
+        没有逾期或未交货。
       </p>
     ) : (
       <LateArrivalChart bars={result.lateBars} />
@@ -342,7 +343,8 @@ function renderWidget(id: WidgetId, result: TimelinessEvaluation): ReactNode {
   }
   if (id === 'months') {
     return result.monthBars.every(
-      (bar) => bar.onTimeQty + bar.lateQty + bar.undeliveredQty === 0,
+      (bar) =>
+        bar.onTimeQty + bar.lateQty + bar.pendingQty + bar.overdueQty === 0,
     ) ? (
       <p className="text-sm text-zinc-500 dark:text-zinc-400">没有到货数据。</p>
     ) : (
@@ -485,11 +487,12 @@ function QtyTable({ result }: { result: TimelinessEvaluation }) {
             <tr className="text-left text-xs text-zinc-500 dark:text-zinc-400">
               <th className={stickyHead}>供应商</th>
               <th className={`${stickyHead} text-right`}>应交数量</th>
-              <th className={`${stickyHead} text-right`}>及时数量</th>
-              <th className={`${stickyHead} text-right`}>延迟数量</th>
-              <th className={`${stickyHead} text-right`}>未到数量</th>
+              <th className={`${stickyHead} text-right`}>准时已交货</th>
+              <th className={`${stickyHead} text-right`}>逾期已交货</th>
+              <th className={`${stickyHead} text-right`}>准时未交货</th>
+              <th className={`${stickyHead} text-right`}>逾期未交货</th>
               <th className={`${stickyHead} text-right`}>到货及时率</th>
-              <th className={`${stickyHead} text-right`}>平均延迟天数</th>
+              <th className={`${stickyHead} text-right`}>平均逾期天数</th>
             </tr>
           </thead>
           <tbody>
@@ -509,7 +512,10 @@ function QtyTable({ result }: { result: TimelinessEvaluation }) {
                   {formatQty(row.lateQty)}
                 </td>
                 <td className="px-2 py-1.5 text-right tabular-nums">
-                  {formatQty(row.undeliveredQty)}
+                  {formatQty(row.pendingQty)}
+                </td>
+                <td className="px-2 py-1.5 text-right tabular-nums">
+                  {formatQty(row.overdueQty)}
                 </td>
                 <td className="px-2 py-1.5 text-right tabular-nums">
                   {formatRate(row.rate)}
@@ -568,10 +574,11 @@ function DetailTable({ result }: { result: TimelinessEvaluation }) {
               <th className={`${stickyHead} text-right`}>订单数量</th>
               <th className={stickyHead}>要求交货日</th>
               <th className={stickyHead}>实际到货日</th>
-              <th className={`${stickyHead} text-right`}>及时数量</th>
-              <th className={`${stickyHead} text-right`}>延迟数量</th>
-              <th className={`${stickyHead} text-right`}>未到数量</th>
-              <th className={`${stickyHead} text-right`}>延迟天数</th>
+              <th className={`${stickyHead} text-right`}>准时已交货</th>
+              <th className={`${stickyHead} text-right`}>逾期已交货</th>
+              <th className={`${stickyHead} text-right`}>准时未交货</th>
+              <th className={`${stickyHead} text-right`}>逾期未交货</th>
+              <th className={`${stickyHead} text-right`}>逾期天数</th>
             </tr>
           </thead>
           <tbody>
@@ -597,7 +604,10 @@ function DetailTable({ result }: { result: TimelinessEvaluation }) {
                   {formatQty(row.lateQty)}
                 </td>
                 <td className="px-2 py-1.5 text-right tabular-nums">
-                  {formatQty(row.undeliveredQty)}
+                  {formatQty(row.pendingQty)}
+                </td>
+                <td className="px-2 py-1.5 text-right tabular-nums">
+                  {formatQty(row.overdueQty)}
                 </td>
                 <td className="px-2 py-1.5 text-right tabular-nums">
                   {formatDelay(row.delayDays)}
@@ -623,7 +633,9 @@ function OverdueTable({ result }: { result: TimelinessEvaluation }) {
   );
   if (result.overdue.length === 0) {
     return (
-      <p className="text-sm text-zinc-500 dark:text-zinc-400">没有逾期未到。</p>
+      <p className="text-sm text-zinc-500 dark:text-zinc-400">
+        没有逾期未交货。
+      </p>
     );
   }
   return (
@@ -636,7 +648,8 @@ function OverdueTable({ result }: { result: TimelinessEvaluation }) {
               <th className={stickyHead}>采购订单号</th>
               <th className={stickyHead}>物料</th>
               <th className={stickyHead}>要求交货日</th>
-              <th className={`${stickyHead} text-right`}>未到数量</th>
+              <th className={`${stickyHead} text-right`}>逾期未交货</th>
+              <th className={`${stickyHead} text-right`}>逾期天数</th>
             </tr>
           </thead>
           <tbody>
@@ -652,7 +665,10 @@ function OverdueTable({ result }: { result: TimelinessEvaluation }) {
                 </td>
                 <td className="px-2 py-1.5">{row.deliveryDate}</td>
                 <td className="px-2 py-1.5 text-right tabular-nums">
-                  {formatQty(row.undeliveredQty)}
+                  {formatQty(row.overdueQty)}
+                </td>
+                <td className="px-2 py-1.5 text-right tabular-nums">
+                  {formatDelay(row.delayDays)}
                 </td>
               </tr>
             ))}
