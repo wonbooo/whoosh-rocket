@@ -430,9 +430,9 @@ fn find_runtime(app: &AppHandle) -> Result<Runtime, String> {
             .join("freelm.mjs");
         if node.is_file() && script.is_file() {
             return Ok(Runtime {
-                node,
-                script,
-                root: dir,
+                node: plain_windows_path(&node),
+                script: plain_windows_path(&script),
+                root: plain_windows_path(&dir),
             });
         }
     }
@@ -443,6 +443,22 @@ fn manifest_runtime() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("resources")
         .join("freelm")
+}
+
+/// Node 24 resolves `\\?\C:\...` as the drive root and exits with
+/// `EISDIR: lstat 'C:'`. Spawn paths have to be ordinary Windows paths.
+fn plain_windows_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    path.to_path_buf()
 }
 
 fn node_binary_name() -> &'static str {
@@ -605,7 +621,7 @@ fn log_tail(path: &Path) -> String {
     if text.is_empty() {
         return String::new();
     }
-    let tail: String = text.chars().rev().take(240).collect();
+    let tail: String = text.chars().rev().take(800).collect();
     let tail: String = tail.chars().rev().collect();
     format!(" {tail}")
 }
@@ -698,7 +714,8 @@ fn assign_job(_pid: u32) {}
 mod tests {
     use super::{
         chat_completions_url, completion_text, health_url, is_loopback_url, is_our_runtime_image,
-        listen_port, remote_status_message, serve_arguments, shutdown, text_from_body,
+        listen_port, plain_windows_path, remote_status_message, serve_arguments, shutdown,
+        text_from_body,
     };
     use serde_json::json;
     use std::path::Path;
@@ -758,6 +775,23 @@ mod tests {
         ));
         assert!(!is_our_runtime_image(r"C:\Program Files\nodejs\node.exe"));
         shutdown();
+    }
+
+    #[test]
+    fn node_spawn_paths_drop_the_windows_verbatim_prefix() {
+        let plain = Path::new(r"C:\app\resources\freelm\node.exe");
+        assert_eq!(plain_windows_path(plain), plain);
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                plain_windows_path(Path::new(r"\\?\C:\app\resources\freelm\node.exe")),
+                Path::new(r"C:\app\resources\freelm\node.exe")
+            );
+            assert_eq!(
+                plain_windows_path(Path::new(r"\\?\UNC\server\share\node.exe")),
+                Path::new(r"\\server\share\node.exe")
+            );
+        }
     }
 
     #[test]
