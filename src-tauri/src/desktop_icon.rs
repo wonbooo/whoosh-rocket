@@ -36,11 +36,11 @@ pub fn install(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     .shadow(false)
     .skip_taskbar(true)
     .focused(false)
-    .visible(true)
+    .visible(false)
     .closable(false)
     .minimizable(false)
     .maximizable(false)
-    .background_color(tauri::window::Color(0, 0, 0, 1))
+    .background_color(tauri::window::Color(0, 0, 0, 0))
     .build()?;
     let _ = window.set_ignore_cursor_events(false);
 
@@ -125,6 +125,13 @@ enum ClickAction {
     DragEnd,
     Arm,
     Open,
+}
+
+fn drag_target(win_x: i32, win_y: i32, down_x: i32, down_y: i32, x: i32, y: i32) -> (i32, i32) {
+    (
+        win_x.saturating_add(x.saturating_sub(down_x)),
+        win_y.saturating_add(y.saturating_sub(down_y)),
+    )
 }
 
 fn physical_delta(dx: f64, dy: f64, scale: f64) -> (i32, i32) {
@@ -222,10 +229,10 @@ fn load_pos(app: &AppHandle) -> Option<(i32, i32)> {
 
 #[cfg(windows)]
 struct IconDrag {
-    origin_x: i32,
-    origin_y: i32,
-    last_x: i32,
-    last_y: i32,
+    down_x: i32,
+    down_y: i32,
+    win_x: i32,
+    win_y: i32,
     moved: bool,
 }
 
@@ -262,8 +269,9 @@ fn install_mouse_hook(app: AppHandle) {
             0,
         )
     };
-    if installed.is_err() {
-        log::warn!("桌面图标鼠标钩子没有装上，退回窗口内的点击处理");
+    match installed {
+        Ok(_) => {}
+        Err(_) => log::warn!("桌面图标鼠标钩子没有装上，退回窗口内的点击处理"),
     }
 }
 
@@ -273,10 +281,10 @@ unsafe extern "system" fn icon_mouse_hook(
     wparam: windows::Win32::Foundation::WPARAM,
     lparam: windows::Win32::Foundation::LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
-    use windows::Win32::Foundation::{LRESULT, RECT};
+    use windows::Win32::Foundation::LRESULT;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, GetWindowRect, MSLLHOOKSTRUCT, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-        WM_RBUTTONDOWN, WM_RBUTTONUP,
+        CallNextHookEx, MSLLHOOKSTRUCT, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONDOWN,
+        WM_RBUTTONUP,
     };
 
     if code < 0 || MENU_OPEN.load(std::sync::atomic::Ordering::SeqCst) {
@@ -296,18 +304,10 @@ unsafe extern "system" fn icon_mouse_hook(
         return unsafe { CallNextHookEx(None, code, wparam, lparam) };
     };
     let info = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
-    let mut rect = RECT::default();
-    if unsafe { GetWindowRect(hwnd, &mut rect) }.is_err() {
+    let screen = (info.pt.x, info.pt.y);
+    let Some((rect, inside)) = icon_hit(hwnd, screen.0, screen.1) else {
         return unsafe { CallNextHookEx(None, code, wparam, lparam) };
-    }
-    let inside = point_in_rect(
-        info.pt.x,
-        info.pt.y,
-        rect.left,
-        rect.top,
-        rect.right,
-        rect.bottom,
-    );
+    };
     let message = wparam.0 as u32;
     let pass = || unsafe { CallNextHookEx(None, code, wparam, lparam) };
 
@@ -319,41 +319,52 @@ unsafe extern "system" fn icon_mouse_hook(
         }
         accept_mouse(hwnd);
         raise_top(hwnd);
+        let (win_x, win_y) = screen_origin(hwnd).unwrap_or((rect.0, rect.1));
         let mut drag = ICON_DRAG.lock().unwrap_or_else(|err| err.into_inner());
         *drag = Some(IconDrag {
-            origin_x: info.pt.x,
-            origin_y: info.pt.y,
-            last_x: info.pt.x,
-            last_y: info.pt.y,
+            down_x: screen.0,
+            down_y: screen.1,
+            win_x,
+            win_y,
             moved: false,
         });
         return LRESULT(1);
     }
 
     if message == WM_MOUSEMOVE {
-        let step = {
+        // Only a move that belongs to a drag started on the icon may be eaten.
+        // Swallowing every move in the system freezes the desktop's own dragging.
+        let target = {
             let mut drag = ICON_DRAG.lock().unwrap_or_else(|err| err.into_inner());
             drag.as_mut().map(|state| {
-                let dx = info.pt.x - state.last_x;
-                let dy = info.pt.y - state.last_y;
-                state.last_x = info.pt.x;
-                state.last_y = info.pt.y;
-                let ox = info.pt.x - state.origin_x;
-                let oy = info.pt.y - state.origin_y;
-                if ox * ox + oy * oy >= 16 {
+                let dx = screen.0.saturating_sub(state.down_x) as i64;
+                let dy = screen.1.saturating_sub(state.down_y) as i64;
+                if dx * dx + dy * dy >= 16 {
                     state.moved = true;
                 }
-                (dx, dy)
+                drag_target(
+                    state.win_x,
+                    state.win_y,
+                    state.down_x,
+                    state.down_y,
+                    screen.0,
+                    screen.1,
+                )
             })
         };
-        let Some((dx, dy)) = step else {
+        let Some((x, y)) = target else {
             return pass();
         };
-        let _ = nudge_physical(&app, dx, dy);
-        return LRESULT(1);
+        let (x, y) = clamp_pos(x, y, rect.2 - rect.0, rect.3 - rect.1);
+        let _ = move_to_screen(hwnd, x, y);
+        // Swallowing the move would freeze the system cursor at the press
+        // point, so the icon would look like it springs back.
+        return pass();
     }
 
     if message == WM_LBUTTONUP {
+        // The button going up anywhere ends the drag, even outside the icon,
+        // otherwise the icon keeps following the pointer forever.
         let state = ICON_DRAG
             .lock()
             .unwrap_or_else(|err| err.into_inner())
@@ -363,15 +374,18 @@ unsafe extern "system" fn icon_mouse_hook(
         };
         let action = {
             let mut last = ICON_CLICK_MS.lock().unwrap_or_else(|err| err.into_inner());
-            let action = classify_click(state.moved, *last, info.time, 500);
+            let now = info.time;
+            let action = classify_click(state.moved, *last, now, 500);
             *last = match action {
-                ClickAction::Arm => Some(info.time),
+                ClickAction::Arm => Some(now),
                 ClickAction::Open | ClickAction::DragEnd => None,
             };
             action
         };
         if action == ClickAction::Open {
             show_main(&app);
+        } else if let Some((x, y)) = screen_origin(hwnd) {
+            save_pos(&app, x, y);
         }
         return LRESULT(1);
     }
@@ -387,11 +401,47 @@ unsafe extern "system" fn icon_mouse_hook(
 }
 
 #[cfg(windows)]
-fn accept_mouse(hwnd: windows::Win32::Foundation::HWND) {
+fn apply_desktop_style(hwnd: windows::Win32::Foundation::HWND) {
     use windows::Win32::UI::WindowsAndMessaging::{
         GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE,
-        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CLIPCHILDREN,
-        WS_CLIPSIBLINGS, WS_EX_TRANSPARENT, WS_VISIBLE,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CHILD,
+        WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_VISIBLE,
+    };
+
+    unsafe {
+        // The window is parented onto the desktop host, so it has to be a child
+        // window. A popup keeps its own top-level frame, which is the rectangle
+        // that paints over the desktop icons underneath.
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
+        let next = (style & !WS_POPUP.0) | WS_CHILD.0 | WS_VISIBLE.0 | WS_CLIPCHILDREN.0;
+        if next != style {
+            SetWindowLongPtrW(hwnd, GWL_STYLE, next as isize);
+        }
+        // WS_EX_LAYERED is what lets the transparent parts of a child window pass
+        // through instead of painting an opaque plate. WS_EX_NOACTIVATE keeps a
+        // click from pulling the desktop host to the front.
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        let next_ex = ex | WS_EX_LAYERED.0 | WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0;
+        if next_ex != ex {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next_ex as isize);
+        }
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+    }
+}
+
+#[cfg(windows)]
+fn accept_mouse(hwnd: windows::Win32::Foundation::HWND) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_TRANSPARENT,
     };
 
     unsafe {
@@ -409,12 +459,37 @@ fn accept_mouse(hwnd: windows::Win32::Foundation::HWND) {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             );
         }
-        let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
-        let next = style | WS_VISIBLE.0 | WS_CLIPSIBLINGS.0 | WS_CLIPCHILDREN.0;
-        if next != style {
-            SetWindowLongPtrW(hwnd, GWL_STYLE, next as isize);
-        }
     }
+}
+
+#[cfg(windows)]
+fn enable_per_pixel_alpha(hwnd: windows::Win32::Foundation::HWND) {
+    use windows::Win32::Graphics::Dwm::{
+        DwmEnableBlurBehindWindow, DwmExtendFrameIntoClientArea, DWM_BB_BLURREGION, DWM_BB_ENABLE,
+        DWM_BLURBEHIND,
+    };
+    use windows::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject};
+    use windows::Win32::UI::Controls::MARGINS;
+
+    let region = unsafe { CreateRectRgn(0, 0, -1, -1) };
+    if region.is_invalid() {
+        return;
+    }
+    let blur = DWM_BLURBEHIND {
+        dwFlags: DWM_BB_ENABLE | DWM_BB_BLURREGION,
+        fEnable: true.into(),
+        hRgnBlur: region,
+        fTransitionOnMaximized: false.into(),
+    };
+    let _ = unsafe { DwmEnableBlurBehindWindow(hwnd, &blur) };
+    let _ = unsafe { DeleteObject(region.into()) };
+    let margins = MARGINS {
+        cxLeftWidth: -1,
+        cxRightWidth: -1,
+        cyTopHeight: -1,
+        cyBottomHeight: -1,
+    };
+    let _ = unsafe { DwmExtendFrameIntoClientArea(hwnd, &margins) };
 }
 
 #[cfg(windows)]
@@ -448,6 +523,7 @@ fn place_on_desktop(app: &AppHandle, window: &WebviewWindow) {
             let _ = SetParent(hwnd, Some(host));
         }
     }
+    apply_desktop_style(hwnd);
     let size = window.outer_size().unwrap_or(tauri::PhysicalSize::new(
         ICON_WIDTH as u32,
         ICON_HEIGHT as u32,
@@ -458,7 +534,9 @@ fn place_on_desktop(app: &AppHandle, window: &WebviewWindow) {
     let _ = move_to_screen(hwnd, x, y);
     accept_mouse(hwnd);
     raise_top(hwnd);
+    enable_per_pixel_alpha(hwnd);
     save_pos(app, x, y);
+    let _ = window.show();
 }
 
 #[cfg(windows)]
@@ -574,6 +652,37 @@ unsafe extern "system" fn enum_desktop(
 }
 
 #[cfg(windows)]
+fn icon_hit(
+    hwnd: windows::Win32::Foundation::HWND,
+    x: i32,
+    y: i32,
+) -> Option<((i32, i32, i32, i32), bool)> {
+    let (left, top) = screen_origin(hwnd)?;
+    let size = icon_size(hwnd)?;
+    let rect = (left, top, left + size.0, top + size.1);
+    let inside = point_in_rect(x, y, rect.0, rect.1, rect.2, rect.3);
+    Some((rect, inside))
+}
+
+#[cfg(windows)]
+fn icon_size(hwnd: windows::Win32::Foundation::HWND) -> Option<(i32, i32)> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+
+    unsafe {
+        let mut rect = RECT::default();
+        GetWindowRect(hwnd, &mut rect).ok()?;
+        let width = rect.right - rect.left;
+        let height = rect.bottom - rect.top;
+        if width > 0 && height > 0 {
+            Some((width, height))
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(windows)]
 fn screen_origin(hwnd: windows::Win32::Foundation::HWND) -> Option<(i32, i32)> {
     use windows::Win32::Foundation::RECT;
     use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
@@ -610,19 +719,19 @@ fn move_to_screen(
     y: i32,
 ) -> windows::core::Result<()> {
     use windows::Win32::UI::WindowsAndMessaging::{
-        SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOSIZE,
+        SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
     };
 
     let (x, y) = parent_point(hwnd, x, y);
     unsafe {
         SetWindowPos(
             hwnd,
-            Some(HWND_TOP),
+            None,
             x,
             y,
             0,
             0,
-            SWP_NOSIZE | SWP_NOACTIVATE,
+            SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
         )
     }
 }
@@ -828,7 +937,7 @@ fn show_icon_menu(owner: windows::Win32::Foundation::HWND) {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_click, icon_menu_action, physical_delta, point_in_rect, ClickAction,
+        classify_click, drag_target, icon_menu_action, physical_delta, point_in_rect, ClickAction,
         IconMenuAction,
     };
 
@@ -847,6 +956,12 @@ mod tests {
             classify_click(true, Some(1_000), 1_100, 500),
             ClickAction::DragEnd
         );
+    }
+
+    #[test]
+    fn drag_follows_the_pointer_from_the_press_origin() {
+        assert_eq!(drag_target(100, 200, 110, 210, 150, 190), (140, 180));
+        assert_eq!(drag_target(100, 200, 110, 210, 110, 210), (100, 200));
     }
 
     #[test]

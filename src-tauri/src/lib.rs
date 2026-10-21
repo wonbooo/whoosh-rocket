@@ -43,6 +43,7 @@ pub fn run() {
             }
             desktop_icon::install(app)?;
             freelm::adopt_existing(app.handle());
+            freelm::start_on_launch(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -61,11 +62,7 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
-        .run(|_app, event| {
-            if let tauri::RunEvent::Exit = event {
-                freelm::shutdown();
-            }
-        });
+        .run(|_app, _event| {});
 }
 
 mod desktop_icon;

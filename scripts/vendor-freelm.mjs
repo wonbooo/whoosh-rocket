@@ -1,23 +1,26 @@
 import { spawnSync } from 'node:child_process';
-import { access, cp, mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const VERSION = '0.5.2';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dest = path.join(root, 'src-tauri', 'resources', 'freelm');
-const nodeName = process.platform === 'win32' ? 'node.exe' : 'node';
-const nodeDest = path.join(dest, nodeName);
 const pkgPath = path.join(dest, 'node_modules', 'freelm', 'package.json');
 
 async function ready() {
   try {
-    await access(nodeDest);
     const pkg = JSON.parse(await readFile(pkgPath, 'utf8'));
     return pkg.version === VERSION;
   } catch {
     return false;
   }
+}
+
+// Node ships with the machine, not the installer. Drop a copy left by an
+// older build so it does not end up inside the exe.
+for (const name of ['node.exe', 'node']) {
+  await rm(path.join(dest, name), { force: true });
 }
 
 if (await ready()) {
@@ -31,7 +34,6 @@ if (!Number.isFinite(major) || major < 20) {
 }
 
 await mkdir(dest, { recursive: true });
-await cp(process.execPath, nodeDest);
 
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const result = spawnSync(

@@ -72,10 +72,11 @@ pub fn health_url(chat_url: &str) -> String {
     format!("{}/health", chat_url.trim_end_matches('/'))
 }
 
-pub fn is_our_runtime_image(path: &str) -> bool {
+#[cfg(test)]
+fn is_our_runtime_image(path: &str) -> bool {
     let path = path.replace('\\', "/").to_ascii_lowercase();
     let name = path.rsplit('/').next().unwrap_or("");
-    (name == "node.exe" || name == "node") && path.contains("/freelm/")
+    name == "node.exe" || name == "node"
 }
 
 pub fn serve_arguments(script: &Path, port: u16, api_key: &str) -> Vec<String> {
@@ -194,8 +195,33 @@ fn lock_owned() -> std::sync::MutexGuard<'static, Option<OwnedServer>> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Remember a FreeLM process this app started in an earlier run, so closing
-/// the app still stops it.
+/// Make sure FreeLM is serving as soon as the app opens, instead of waiting for
+/// the first request. Node is installed silently first when the machine has none.
+pub fn start_on_launch(app: AppHandle) {
+    std::thread::spawn(move || {
+        let log_path = freelm_log(&app);
+        if let Err(err) = install_node_if_missing(&log_path) {
+            log::warn!("{err}");
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .and_then(|mut file| {
+                    use std::io::Write;
+                    writeln!(file, "{err}")
+                });
+            return;
+        }
+        let url = "http://127.0.0.1:4000/v1/chat/completions";
+        let started = tauri::async_runtime::block_on(ensure_local_server(&app, url, "freelm"));
+        if let Err(err) = started {
+            log::warn!("{err}");
+        }
+    });
+}
+
+/// Remember a FreeLM process this app started in an earlier run, so the next
+/// launch reuses it instead of starting a second one.
 pub fn adopt_existing(app: &AppHandle) {
     let Ok(path) = pid_file(app) else {
         return;
@@ -204,7 +230,8 @@ pub fn adopt_existing(app: &AppHandle) {
     adopt(&mut guard, &path);
 }
 
-pub fn shutdown() {
+#[cfg(test)]
+fn shutdown() {
     let owned = {
         let mut guard = lock_owned();
         guard.take()
@@ -330,7 +357,6 @@ async fn ensure_local_server(app: &AppHandle, chat_url: &str, api_key: &str) -> 
             let child = spawn_server(&runtime, port, api_key, &log_path)?;
             let pid = child.id();
             let _ = std::fs::write(&pid_path, pid.to_string());
-            assign_job(pid);
             *guard = Some(OwnedServer {
                 child: Some(child),
                 pid,
@@ -410,6 +436,24 @@ struct Runtime {
 }
 
 fn find_runtime(app: &AppHandle) -> Result<Runtime, String> {
+    let root = runtime_root(app)?;
+    let script = root
+        .join("node_modules")
+        .join("freelm")
+        .join("bin")
+        .join("freelm.mjs");
+    if !script.is_file() {
+        return Err(missing_runtime_message());
+    }
+    let node = locate_node()?;
+    Ok(Runtime {
+        node: plain_windows_path(&node),
+        script: plain_windows_path(&script),
+        root: plain_windows_path(&root),
+    })
+}
+
+fn runtime_root(app: &AppHandle) -> Result<PathBuf, String> {
     let mut dirs = Vec::new();
     if cfg!(debug_assertions) {
         dirs.push(manifest_runtime());
@@ -421,22 +465,15 @@ fn find_runtime(app: &AppHandle) -> Result<Runtime, String> {
     if !cfg!(debug_assertions) {
         dirs.push(manifest_runtime());
     }
-    for dir in dirs {
-        let node = dir.join(node_binary_name());
-        let script = dir
-            .join("node_modules")
-            .join("freelm")
-            .join("bin")
-            .join("freelm.mjs");
-        if node.is_file() && script.is_file() {
-            return Ok(Runtime {
-                node: plain_windows_path(&node),
-                script: plain_windows_path(&script),
-                root: plain_windows_path(&dir),
-            });
-        }
-    }
-    Err(missing_runtime_message())
+    dirs.into_iter()
+        .find(|dir| {
+            dir.join("node_modules")
+                .join("freelm")
+                .join("bin")
+                .join("freelm.mjs")
+                .is_file()
+        })
+        .ok_or_else(missing_runtime_message)
 }
 
 fn manifest_runtime() -> PathBuf {
@@ -467,6 +504,160 @@ fn node_binary_name() -> &'static str {
     } else {
         "node"
     }
+}
+
+/// Where a Node installed for the current user lands. The official Windows
+/// installer puts it under %ProgramFiles%\nodejs, which is the same for a
+/// per-machine and a per-user install.
+fn node_install_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("ProgramFiles").map(|dir| PathBuf::from(dir).join("nodejs"))
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// The Node the bundled FreeLM should run on: one already on PATH, otherwise
+/// the one this app installed itself.
+fn locate_node() -> Result<PathBuf, String> {
+    if let Some(found) = node_on_path() {
+        return Ok(found);
+    }
+    if let Some(dir) = node_install_dir() {
+        let installed = dir.join(node_binary_name());
+        if installed.is_file() {
+            return Ok(installed);
+        }
+    }
+    Err(missing_node_message())
+}
+
+fn node_on_path() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(node_binary_name());
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn missing_node_message() -> String {
+    if cfg!(windows) {
+        "这台电脑没有 Node.js，自动安装也没有成功。请联网后重新打开应用。".into()
+    } else {
+        "这台电脑没有 Node.js，无法启动 FreeLM。".into()
+    }
+}
+
+/// The current Node release line FreeLM runs on. Node 20 is the oldest the
+/// bundled package supports, and it stays on the long-term line.
+const NODE_MAJOR: &str = "24";
+
+/// A silent install of the official Node.js build, or `None` where this app
+/// does not install one.
+fn node_installer_url() -> Option<String> {
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    {
+        Some(format!(
+            "https://nodejs.org/dist/latest-v{NODE_MAJOR}.x/node-v{NODE_MAJOR}-x64.msi"
+        ))
+    }
+    #[cfg(not(all(windows, target_arch = "x86_64")))]
+    {
+        None
+    }
+}
+
+/// Arguments that make the official MSI install without any window, for the
+/// current user only, and add node.exe to PATH.
+fn node_install_arguments(installer: &Path) -> Vec<String> {
+    vec![
+        "/i".into(),
+        installer.to_string_lossy().into_owned(),
+        "/qn".into(),
+        "/norestart".into(),
+        "ALLUSERS=".into(),
+        "ADDLOCAL=ALL".into(),
+    ]
+}
+
+/// Download and install Node when the machine has none. Runs off the UI thread
+/// because the download and the installer both take a while.
+fn install_node_if_missing(log_path: &Path) -> Result<(), String> {
+    if locate_node().is_ok() {
+        return Ok(());
+    }
+    let Some(url) = node_installer_url() else {
+        return Err(missing_node_message());
+    };
+    let dir = log_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(std::env::temp_dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let installer = dir.join("node-setup.msi");
+    download_file(&url, &installer)?;
+    let status = run_installer(&installer)?;
+    let _ = std::fs::remove_file(&installer);
+    if !status.success() {
+        return Err(format!(
+            "Node.js 静默安装失败（退出码 {}）。",
+            status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "未知".into())
+        ));
+    }
+    if locate_node().is_err() {
+        return Err(missing_node_message());
+    }
+    Ok(())
+}
+
+fn download_file(url: &str, dest: &Path) -> Result<(), String> {
+    let response = reqwest::blocking::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+        .map_err(|err| format!("无法下载 Node.js：{err}"))?
+        .get(url)
+        .send()
+        .map_err(|err| format!("无法下载 Node.js：{err}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "无法下载 Node.js：服务器返回 {}",
+            response.status()
+        ));
+    }
+    let bytes = response
+        .bytes()
+        .map_err(|err| format!("无法下载 Node.js：{err}"))?;
+    if bytes.len() < 1_000_000 {
+        return Err("下载到的 Node.js 安装包不完整。".into());
+    }
+    std::fs::write(dest, &bytes).map_err(|err| format!("无法保存 Node.js 安装包：{err}"))
+}
+
+fn run_installer(installer: &Path) -> Result<std::process::ExitStatus, String> {
+    let mut command = Command::new("msiexec");
+    command
+        .args(node_install_arguments(installer))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    command
+        .status()
+        .map_err(|err| format!("没能启动 Node.js 安装程序：{err}"))
 }
 
 fn missing_runtime_message() -> String {
@@ -502,7 +693,9 @@ fn spawn_server(
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
+        // DETACHED_PROCESS: the server outlives this app, so it keeps running
+        // after the window closes and only ends when the machine shuts down.
+        command.creation_flags(0x0000_0008 | 0x0800_0000);
     }
     command
         .spawn()
@@ -535,7 +728,7 @@ fn adopt(guard: &mut Option<OwnedServer>, pid_file: &Path) {
         let _ = std::fs::remove_file(pid_file);
         return;
     };
-    if pid == 0 || !process_is_our_runtime(pid) {
+    if pid == 0 || !process_alive(pid) {
         let _ = std::fs::remove_file(pid_file);
         return;
     }
@@ -549,7 +742,7 @@ fn adopt(guard: &mut Option<OwnedServer>, pid_file: &Path) {
 fn owned_running(guard: &Option<OwnedServer>) -> bool {
     match guard {
         Some(owned) if owned.child.is_some() => true,
-        Some(owned) => process_is_our_runtime(owned.pid),
+        Some(owned) => process_alive(owned.pid),
         None => false,
     }
 }
@@ -568,7 +761,7 @@ fn reap_if_exited(guard: &mut Option<OwnedServer>) -> Option<String> {
             Err(err) => return Some(err.to_string()),
         }
     }
-    if !process_is_our_runtime(owned.pid) {
+    if !process_alive(owned.pid) {
         let pid_file = owned.pid_file.clone();
         let _ = std::fs::remove_file(pid_file);
         *guard = None;
@@ -577,39 +770,10 @@ fn reap_if_exited(guard: &mut Option<OwnedServer>) -> Option<String> {
 }
 
 fn stop_owned(mut owned: OwnedServer) {
-    kill_pid(owned.pid);
-    if let Some(mut child) = owned.child.take() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    if !process_is_our_runtime(owned.pid) {
-        let _ = std::fs::remove_file(owned.pid_file);
-    }
-}
-
-fn kill_pid(pid: u32) {
-    if pid == 0 {
-        return;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        let _ = Command::new("taskkill")
-            .args(["/F", "/T", "/PID", &pid.to_string()])
-            .creation_flags(0x0800_0000)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = Command::new("kill")
-            .args(["-TERM", &pid.to_string()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+    if let Some(child) = owned.child.take() {
+        // Dropping the handle would kill the process on Windows. Forgetting it
+        // leaves the server running until the machine shuts down.
+        std::mem::forget(child);
     }
 }
 
@@ -626,96 +790,34 @@ fn log_tail(path: &Path) -> String {
     format!(" {tail}")
 }
 
-fn process_is_our_runtime(pid: u32) -> bool {
-    process_image(pid).is_some_and(|path| is_our_runtime_image(&path))
-}
-
-#[cfg(windows)]
-fn process_image(pid: u32) -> Option<String> {
-    use windows::core::PWSTR;
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-        PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-    unsafe {
-        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
-        let mut buffer = [0u16; 1024];
-        let mut len = buffer.len() as u32;
-        let queried = QueryFullProcessImageNameW(
-            process,
-            PROCESS_NAME_WIN32,
-            PWSTR(buffer.as_mut_ptr()),
-            &mut len,
-        );
-        let _ = CloseHandle(process);
-        queried.ok()?;
-        let len = len as usize;
-        if len > buffer.len() {
-            return None;
+fn process_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        unsafe {
+            let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+                return false;
+            };
+            let _ = CloseHandle(process);
+            true
         }
-        Some(String::from_utf16_lossy(&buffer[..len]))
+    }
+    #[cfg(not(windows))]
+    {
+        Path::new(&format!("/proc/{pid}")).is_dir()
     }
 }
-
-#[cfg(not(windows))]
-fn process_image(pid: u32) -> Option<String> {
-    let _ = pid;
-    None
-}
-
-#[cfg(windows)]
-fn assign_job(pid: u32) {
-    use std::sync::OnceLock;
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows::Win32::System::JobObjects::AssignProcessToJobObject;
-    use windows::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
-
-    static JOB: OnceLock<isize> = OnceLock::new();
-    let raw = *JOB.get_or_init(|| unsafe { create_kill_on_close_job().unwrap_or(0) });
-    if raw == 0 {
-        return;
-    }
-    let job = HANDLE(raw as *mut core::ffi::c_void);
-    let Ok(process) = (unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, false, pid) })
-    else {
-        return;
-    };
-    let _ = unsafe { AssignProcessToJobObject(job, process) };
-    let _ = unsafe { CloseHandle(process) };
-}
-
-#[cfg(windows)]
-unsafe fn create_kill_on_close_job() -> Result<isize, ()> {
-    use windows::core::PCWSTR;
-    use windows::Win32::System::JobObjects::{
-        CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    };
-    let job = unsafe { CreateJobObjectW(None, PCWSTR::null()) }.map_err(|_| ())?;
-    let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    unsafe {
-        SetInformationJobObject(
-            job,
-            JobObjectExtendedLimitInformation,
-            &info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION as *const core::ffi::c_void,
-            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-        )
-    }
-    .map_err(|_| ())?;
-    Ok(job.0 as isize)
-}
-
-#[cfg(not(windows))]
-fn assign_job(_pid: u32) {}
 
 #[cfg(test)]
 mod tests {
     use super::{
         chat_completions_url, completion_text, health_url, is_loopback_url, is_our_runtime_image,
-        listen_port, plain_windows_path, remote_status_message, serve_arguments, shutdown,
-        text_from_body,
+        listen_port, node_install_arguments, node_installer_url, plain_windows_path,
+        remote_status_message, serve_arguments, shutdown, text_from_body,
     };
     use serde_json::json;
     use std::path::Path;
@@ -770,10 +872,8 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "serve"));
         assert!(args.iter().any(|arg| arg == "4000"));
         assert!(!args.iter().any(|arg| arg == "npx"));
-        assert!(is_our_runtime_image(
-            r"C:\Program Files\咻咻小火箭\resources\freelm\node.exe"
-        ));
-        assert!(!is_our_runtime_image(r"C:\Program Files\nodejs\node.exe"));
+        assert!(is_our_runtime_image(r"C:\Program Files\nodejs\node.exe"));
+        assert!(!is_our_runtime_image(r"C:\Windows\System32\notepad.exe"));
         shutdown();
     }
 
@@ -791,6 +891,19 @@ mod tests {
                 plain_windows_path(Path::new(r"\\?\UNC\server\share\node.exe")),
                 Path::new(r"\\server\share\node.exe")
             );
+        }
+    }
+
+    #[test]
+    fn node_installer_is_silent_and_per_user() {
+        let args = node_install_arguments(Path::new(r"C:\temp\node-setup.msi"));
+        assert!(args.iter().any(|arg| arg == "/qn"));
+        assert!(args.iter().any(|arg| arg == "ALLUSERS="));
+        assert!(args.iter().any(|arg| arg.contains("node-setup.msi")));
+        let url = node_installer_url().unwrap_or_default();
+        if !url.is_empty() {
+            assert!(url.starts_with("https://nodejs.org/dist/"));
+            assert!(url.ends_with(".msi"));
         }
     }
 

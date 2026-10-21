@@ -9,6 +9,7 @@ import {
 import { LogoMark } from '@/components/shared/LogoMark';
 import { SettingsDialog } from '@/components/shared/SettingsDialog';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import { LicenseImportPage } from '@/features/license/LicenseImportPage';
 import { useLicense } from '@/features/license/LicenseContext';
 import { useToast } from '@/hooks/use-toast';
@@ -129,30 +130,20 @@ export function Header() {
               {connecting ? '连接中...' : '连接金蝶'}
             </Button>
           )}
-          <button
-            type="button"
-            role="switch"
-            aria-checked={dark}
+          <Switch
+            checked={dark}
             aria-label={dark ? '暗色风格' : '默认风格'}
             title={dark ? '暗色风格，点击切回默认' : '默认风格，点击切换暗色'}
-            className="relative h-[26px] w-[52px] shrink-0 rounded-full bg-zinc-800 transition-colors"
-            onClick={() => setTheme(dark ? 'default' : 'dark')}
+            onCheckedChange={(checked) =>
+              setTheme(checked ? 'dark' : 'default')
+            }
           >
-            <span
-              aria-hidden="true"
-              className="absolute top-[3px] flex h-5 w-5 items-center justify-center rounded-full text-zinc-800 shadow transition-all"
-              style={{
-                left: dark ? '29px' : '3px',
-                background: dark ? '#1783FF' : '#ffffff',
-              }}
-            >
-              {dark ? (
-                <Moon className="h-3 w-3" fill="currentColor" />
-              ) : (
-                <Sun className="h-3 w-3" />
-              )}
-            </span>
-          </button>
+            {dark ? (
+              <Moon className="h-3 w-3" fill="currentColor" />
+            ) : (
+              <Sun className="h-3 w-3" />
+            )}
+          </Switch>
           <Button
             type="button"
             variant="ghost"
