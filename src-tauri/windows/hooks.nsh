@@ -1,26 +1,36 @@
-; Node.js is installed while the exe installs, and FreeLM is started right after
-; the files land, so the app opens with the server already running.
-; The current-user installer has no admin rights, so the Node check only looks at
-; HKCU and installs for the current user (ALLUSERS=). A machine-wide Node shows up
-; in the app's own PATH check at launch, so a missing HKCU entry just means Node
-; gets installed twice at worst, never that the install is blocked.
+; Node.js is installed into the app folder while the exe installs, and FreeLM is
+; started right after the files land, so the app opens with the server already
+; running.
+; The official MSI installs per-machine (Program Files + HKLM), which fails for
+; the non-admin current-user installer this app ships. The portable win-x64 zip
+; has the same node.exe and needs no elevation, so node.exe is pulled out of it.
 
-!define NODE_MSI_URL "https://nodejs.org/dist/v24.22.0/node-v24.22.0-x64.msi"
+!define NODE_VERSION "v24.22.0"
+!define NODE_ZIP_URL "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-win-x64.zip"
 !define NODE_REG_KEY "Software\Node.js"
 !define FREELM_PORT "4000"
 !define FREELM_API_KEY "freelm"
 
 !macro NSIS_HOOK_PREINSTALL
+  ${If} ${FileExists} "$INSTDIR\nodejs\node.exe"
+    DetailPrint "Node.js is already installed, skipping."
+    Goto node_done
+  ${EndIf}
+
+  ; A machine-wide Node from the official MSI is usable too.
   ReadRegStr $0 HKCU "${NODE_REG_KEY}" "InstallPath"
+  ${If} $0 == ""
+    ReadRegStr $0 HKLM "${NODE_REG_KEY}" "InstallPath"
+  ${EndIf}
   ${If} $0 != ""
-    ${AndIf} ${FileExists} "$0\node.exe"
-      DetailPrint "Node.js is already installed, skipping."
-      Goto node_done
+  ${AndIf} ${FileExists} "$0\node.exe"
+    DetailPrint "Node.js is already installed, skipping."
+    Goto node_done
   ${EndIf}
 
   DetailPrint "Downloading Node.js..."
-  Delete "$TEMP\node-setup.msi"
-  NSISdl::download /TIMEOUT=300000 "${NODE_MSI_URL}" "$TEMP\node-setup.msi"
+  Delete "$TEMP\node-win-x64.zip"
+  NSISdl::download /TIMEOUT=600000 "${NODE_ZIP_URL}" "$TEMP\node-win-x64.zip"
   Pop $1
   ${If} $1 != "success"
     MessageBox MB_ICONSTOP "Node.js 下载失败（$1）。请检查网络后重新安装。"
@@ -28,10 +38,30 @@
   ${EndIf}
 
   DetailPrint "Installing Node.js..."
-  ExecWait 'msiexec /i "$TEMP\node-setup.msi" /qn /norestart ALLUSERS= ADDLOCAL=ALL' $2
-  Delete "$TEMP\node-setup.msi"
-  ${If} $2 != 0
-    MessageBox MB_ICONSTOP "Node.js 安装失败（退出码 $2）。"
+  CreateDirectory "$INSTDIR\nodejs"
+  ; The paths go in as arguments so the script stays ASCII: the install folder
+  ; is named in Chinese and NSIS writes files in the ANSI code page.
+  FileOpen $4 "$TEMP\node-extract.ps1" w
+  FileWrite $4 "param([string]$$Zip, [string]$$Dest)$\r$\n"
+  FileWrite $4 "$$ErrorActionPreference = 'Stop'$\r$\n"
+  FileWrite $4 "Add-Type -AssemblyName System.IO.Compression.FileSystem$\r$\n"
+  FileWrite $4 "$$archive = [System.IO.Compression.ZipFile]::OpenRead($$Zip)$\r$\n"
+  FileWrite $4 "try {$\r$\n"
+  FileWrite $4 "  $$entry = $$archive.Entries | Where-Object { $$_.FullName -like '*/node.exe' } | Select-Object -First 1$\r$\n"
+  FileWrite $4 "  if (-not $$entry) { throw 'node.exe is missing from the archive' }$\r$\n"
+  FileWrite $4 "  [System.IO.Compression.ZipFileExtensions]::ExtractToFile($$entry, $$Dest, $$true)$\r$\n"
+  FileWrite $4 "} finally {$\r$\n"
+  FileWrite $4 "  $$archive.Dispose()$\r$\n"
+  FileWrite $4 "}$\r$\n"
+  FileClose $4
+  nsExec::ExecToStack 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$TEMP\node-extract.ps1" "$TEMP\node-win-x64.zip" "$INSTDIR\nodejs\node.exe"'
+  Pop $2
+  Pop $3
+  Delete "$TEMP\node-extract.ps1"
+  Delete "$TEMP\node-win-x64.zip"
+  ${IfNot} ${FileExists} "$INSTDIR\nodejs\node.exe"
+    DetailPrint "Node.js extract output: $3"
+    MessageBox MB_ICONSTOP "Node.js 解压失败（退出码 $2）。请检查网络和磁盘空间后重新安装。"
     Abort
   ${EndIf}
 
@@ -48,9 +78,12 @@
     Goto freelm_done
   ${EndIf}
 
-  ; Node's MSI adds itself to PATH, but this installer process keeps the PATH it
-  ; started with, so the freshly installed node.exe has to be named in full.
-  ReadRegStr $2 HKCU "${NODE_REG_KEY}" "InstallPath"
+  ; Node was installed into the app folder by the pre-install hook; a Node that
+  ; was already on the machine is used as-is.
+  StrCpy $2 "$INSTDIR\nodejs"
+  ${IfNot} ${FileExists} "$2\node.exe"
+    ReadRegStr $2 HKCU "${NODE_REG_KEY}" "InstallPath"
+  ${EndIf}
   ${If} $2 == ""
   ${OrIfNot} ${FileExists} "$2\node.exe"
     ReadRegStr $2 HKLM "${NODE_REG_KEY}" "InstallPath"
@@ -87,6 +120,21 @@
   ${EndIf}
 
   freelm_done:
+!macroend
+
+!macro NSIS_HOOK_PREUNINSTALL
+  ; The FreeLM server runs detached on this node.exe and would keep the file
+  ; locked; stop the copies that belong to this install before deleting them.
+  FileOpen $0 "$TEMP\node-stop.ps1" w
+  FileWrite $0 "param([string]$$Node)$\r$\n"
+  FileWrite $0 "Get-Process -Name node -ErrorAction SilentlyContinue | Where-Object { $$_.Path -eq $$Node } | Stop-Process -Force -ErrorAction SilentlyContinue$\r$\n"
+  FileClose $0
+  nsExec::ExecToStack 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$TEMP\node-stop.ps1" "$INSTDIR\nodejs\node.exe"'
+  Pop $0
+  Pop $1
+  Delete "$TEMP\node-stop.ps1"
+  Sleep 500
+  RMDir /r "$INSTDIR\nodejs"
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL

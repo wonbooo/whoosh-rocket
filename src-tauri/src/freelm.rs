@@ -394,7 +394,7 @@ fn find_runtime(app: &AppHandle) -> Result<Runtime, String> {
     if !script.is_file() {
         return Err(missing_runtime_message());
     }
-    let node = locate_node()?;
+    let node = locate_node(app)?;
     Ok(Runtime {
         node: plain_windows_path(&node),
         script: plain_windows_path(&script),
@@ -455,9 +455,7 @@ fn node_binary_name() -> &'static str {
     }
 }
 
-/// Where a Node installed for the current user lands. The official Windows
-/// installer puts it under %ProgramFiles%\nodejs, which is the same for a
-/// per-machine and a per-user install.
+/// A machine-wide Node from the official MSI lands under %ProgramFiles%\nodejs.
 fn node_install_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
@@ -470,18 +468,34 @@ fn node_install_dir() -> Option<PathBuf> {
 }
 
 /// The Node the bundled FreeLM should run on: one already on PATH, otherwise
-/// the one this app installed itself.
-fn locate_node() -> Result<PathBuf, String> {
+/// the copy the installer unpacked into the app folder.
+fn locate_node(app: &AppHandle) -> Result<PathBuf, String> {
     if let Some(found) = node_on_path() {
         return Ok(found);
     }
-    if let Some(dir) = node_install_dir() {
+    for dir in node_dirs(app) {
         let installed = dir.join(node_binary_name());
         if installed.is_file() {
             return Ok(installed);
         }
     }
     Err(missing_node_message())
+}
+
+fn node_dirs(app: &AppHandle) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(resource) = app.path().resource_dir() {
+        dirs.push(resource.join("nodejs"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            dirs.push(dir.join("nodejs"));
+        }
+    }
+    if let Some(dir) = node_install_dir() {
+        dirs.push(dir);
+    }
+    dirs
 }
 
 fn node_on_path() -> Option<PathBuf> {
