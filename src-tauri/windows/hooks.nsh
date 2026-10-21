@@ -112,11 +112,18 @@
   FileWrite $4 '"$2\node.exe" "$3\node_modules\freelm\bin\freelm.mjs" serve --host 127.0.0.1 --port ${FREELM_PORT} --api-key ${FREELM_API_KEY} --quiet >> "$LOCALAPPDATA\${BUNDLEID}\freelm.log" 2>&1$\r$\n'
   FileClose $4
   ; A detached process survives this installer and keeps serving after it closes.
-  nsExec::Exec 'wmic process call create "$LOCALAPPDATA\${BUNDLEID}\freelm-start.cmd"'
+  ; wmic is gone from current Windows 11 builds, so PowerShell does the launch.
+  ; The batch file stays on disk because the new shell reads it as it starts.
+  FileOpen $4 "$TEMP\freelm-launch.ps1" w
+  FileWrite $4 "param([string]$$Cmd)$\r$\n"
+  FileWrite $4 "Start-Process -WindowStyle Hidden -FilePath $$Cmd$\r$\n"
+  FileClose $4
+  nsExec::ExecToStack 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$TEMP\freelm-launch.ps1" "$LOCALAPPDATA\${BUNDLEID}\freelm-start.cmd"'
   Pop $5
-  Delete "$LOCALAPPDATA\${BUNDLEID}\freelm-start.cmd"
+  Pop $6
+  Delete "$TEMP\freelm-launch.ps1"
   ${If} $5 != 0
-    DetailPrint "FreeLM did not start (exit code $5). The app will start it on launch."
+    DetailPrint "FreeLM did not start (exit code $5): $6. The app will start it on launch."
   ${EndIf}
 
   freelm_done:

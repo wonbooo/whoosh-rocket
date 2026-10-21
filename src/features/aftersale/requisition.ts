@@ -12,19 +12,6 @@ export function toKingdeeDate(ymd: string): string {
   return ymd.replaceAll('/', '-');
 }
 
-/** 周六、周日顺延到下周一，尽量落到工作日历的生产日。 */
-export function toNextWeekdayDate(ymd: string): string {
-  const iso = toKingdeeDate(ymd);
-  const date = new Date(`${iso}T00:00:00Z`);
-  const weekday = date.getUTCDay();
-  if (weekday === 6) {
-    date.setUTCDate(date.getUTCDate() + 2);
-  } else if (weekday === 0) {
-    date.setUTCDate(date.getUTCDate() + 1);
-  }
-  return date.toISOString().slice(0, 10);
-}
-
 export function buildPurchaseRequisitionModel(
   rows: AftersaleRow[],
   orgId?: number | null,

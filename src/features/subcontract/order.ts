@@ -5,7 +5,6 @@ import {
   operateAftersaleBills,
   readSaveOutcome,
   toKingdeeDate,
-  toNextWeekdayDate,
   type BillOperators,
   type PlaceOrderResult,
 } from '@/features/aftersale/requisition';
@@ -34,7 +33,7 @@ export function buildSubcontractOrderModel(
       const entry: Record<string, unknown> = {
         FMaterialId: { FNumber: row.materialNumber },
         FQty: row.qty,
-        FPlanFinishDate: toNextWeekdayDate(row.planFinishDate),
+        FPlanFinishDate: toKingdeeDate(row.planFinishDate),
         FSupplierId: { FNumber: row.supplier },
       };
       if (row.purchaser) {

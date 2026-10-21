@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as XLSX from 'xlsx';
 import { kingdeeApi } from '@/apis/kingdee/api';
-import { toNextWeekdayDate } from '@/features/aftersale/requisition';
 import {
   buildSubcontractOrderModel,
   operateSubcontractBills,
@@ -51,10 +50,19 @@ const sampleRows: SubcontractRow[] = [
 ];
 
 describe('subcontract excel', () => {
-  it('moves weekend plan dates to the next weekday', () => {
-    expect(toNextWeekdayDate('2027/08/29')).toBe('2027-08-30');
-    expect(toNextWeekdayDate('2027/08/28')).toBe('2027-08-30');
-    expect(toNextWeekdayDate('2027/08/30')).toBe('2027-08-30');
+  it('keeps weekend plan dates unchanged', () => {
+    const sunday = buildSubcontractOrderModel([sampleRows[0]!], 100201);
+    const saturday = buildSubcontractOrderModel(
+      [{ ...sampleRows[0]!, planFinishDate: '2027/08/28' }],
+      100201,
+    );
+    expect(
+      (sunday.FTreeEntity as { FPlanFinishDate: string }[])[0]?.FPlanFinishDate,
+    ).toBe('2027-08-29');
+    expect(
+      (saturday.FTreeEntity as { FPlanFinishDate: string }[])[0]
+        ?.FPlanFinishDate,
+    ).toBe('2027-08-28');
   });
   it('parses workbook dates as YYYY/MM/DD and groups by supplier', () => {
     const sheet = XLSX.utils.aoa_to_sheet([
@@ -94,7 +102,7 @@ describe('subcontract excel', () => {
       expect.objectContaining({
         FMaterialId: { FNumber: 'DJS10020060132' },
         FQty: 2,
-        FPlanFinishDate: '2027-08-30',
+        FPlanFinishDate: '2027-08-29',
         FSupplierId: { FNumber: 'CP00219' },
         F_PRZG_procure: { FNumber: '23050514' },
         FStockId: { FNumber: 'CK338' },
