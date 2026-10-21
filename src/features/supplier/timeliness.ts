@@ -9,6 +9,8 @@ export interface PurchaseLine {
   excluded: boolean;
   amount?: number | null;
   orderDate?: string;
+  /** 订单行上的累计收货数量。金蝶到货及时率按它判定，不看收货单日期。 */
+  receivedQty?: number;
 }
 
 export interface ArrivalReceipt {
@@ -90,7 +92,6 @@ export interface OverdueLine {
 }
 
 export interface TimelinessEvaluation {
-  excludedQty: number;
   suppliers: SupplierTimeliness[];
   monthRates: SupplierMonthRate[];
   details: TimelinessDetail[];
@@ -186,34 +187,26 @@ function inScope(line: PurchaseLine, supplier: string, month: string): boolean {
   return monthOf(line.deliveryDate) != null && line.orderQty > 0;
 }
 
-function matchingReceipts(
+export function matchesLine(
   line: PurchaseLine,
-  receipts: ArrivalReceipt[],
-  today: string,
-): ArrivalReceipt[] {
-  return receipts
-    .filter((receipt) => {
-      if (receipt.qty <= 0 || parseDay(receipt.date) == null) {
-        return false;
-      }
-      if (receipt.date > today) {
-        return false;
-      }
-      if (line.entryId) {
-        return receipt.entryId === line.entryId;
-      }
-      return (
-        !receipt.entryId &&
-        receipt.billNo === line.billNo &&
-        receipt.materialNumber === line.materialNumber
-      );
-    })
-    .sort((left, right) => left.date.localeCompare(right.date));
+  receipt: ArrivalReceipt,
+): boolean {
+  if (line.entryId && receipt.entryId === line.entryId) {
+    return true;
+  }
+  // 收料通知单、采购入库单上的「采购订单分录内码」经常是空的，
+  // 这时按订单编号 + 物料编码回退，和金蝶到货及时率报表的关联口径一致。
+  return (
+    !receipt.entryId &&
+    line.billNo !== '' &&
+    receipt.billNo === line.billNo &&
+    line.materialNumber !== '' &&
+    receipt.materialNumber === line.materialNumber
+  );
 }
 
 function allocate(
   line: PurchaseLine,
-  receipts: ArrivalReceipt[],
   graceDays: number,
   today: string,
 ): AllocatedLine | null {
@@ -222,11 +215,15 @@ function allocate(
   if (!month || !deadline) {
     return null;
   }
-  let remaining = line.orderQty;
-  let onTimeQty = 0;
-  let lateQty = 0;
-  let delayWeight = 0;
-  const details: TimelinessDetail[] = [];
+  // 金蝶云星空的到货及时率不看收货单的日期：累计收货数量达到订单数量即算及时，
+  // 没收满的部分在宽限截止日及之前算准时未交货，过了截止日才算逾期未交货。
+  const received = Math.min(Math.max(line.receivedQty ?? 0, 0), line.orderQty);
+  const onTimeQty = received >= line.orderQty ? line.orderQty : 0;
+  const open = line.orderQty - received;
+  const pendingQty = open > 0 && today <= deadline ? open : 0;
+  const overdueQty = open > 0 && today > deadline ? open : 0;
+  const delayDays =
+    overdueQty > 0 ? daysBetween(line.deliveryDate, today) : null;
   const base = {
     supplier: line.supplier,
     billNo: line.billNo,
@@ -237,76 +234,26 @@ function allocate(
     deliveryDate: line.deliveryDate,
     month,
   };
-  for (const receipt of matchingReceipts(line, receipts, today)) {
-    if (remaining <= 0) {
-      break;
-    }
-    const take = Math.min(receipt.qty, remaining);
-    if (take <= 0) {
-      continue;
-    }
-    if (receipt.date <= deadline) {
-      onTimeQty += take;
-      details.push({
-        ...base,
-        actualDate: receipt.date,
-        onTimeQty: take,
-        lateQty: 0,
-        pendingQty: 0,
-        overdueQty: 0,
-        undeliveredQty: 0,
-        delayDays: null,
-      });
-    } else {
-      const delayDays = daysBetween(line.deliveryDate, receipt.date) ?? 0;
-      lateQty += take;
-      delayWeight += delayDays * take;
-      details.push({
-        ...base,
-        actualDate: receipt.date,
-        onTimeQty: 0,
-        lateQty: take,
-        pendingQty: 0,
-        overdueQty: 0,
-        undeliveredQty: 0,
-        delayDays,
-      });
-    }
-    remaining -= take;
-  }
-  let pendingQty = 0;
-  let overdueQty = 0;
-  if (remaining > 0) {
-    if (today <= deadline) {
-      pendingQty = remaining;
-    } else {
-      overdueQty = remaining;
-    }
-    const delayDays =
-      today > deadline ? daysBetween(line.deliveryDate, today) : null;
-    if (delayDays != null) {
-      delayWeight += delayDays * overdueQty;
-    }
-    details.push({
-      ...base,
-      actualDate: '',
-      onTimeQty: 0,
-      lateQty: 0,
-      pendingQty,
-      overdueQty,
-      undeliveredQty: remaining,
-      delayDays,
-    });
-  }
   return {
     line,
     month,
     onTimeQty,
-    lateQty,
+    lateQty: 0,
     pendingQty,
     overdueQty,
-    delayWeight,
-    details,
+    delayWeight: delayDays == null ? 0 : delayDays * overdueQty,
+    details: [
+      {
+        ...base,
+        actualDate: '',
+        onTimeQty,
+        lateQty: 0,
+        pendingQty,
+        overdueQty,
+        undeliveredQty: open,
+        delayDays,
+      },
+    ],
   };
 }
 
@@ -378,15 +325,10 @@ export function evaluateTimeliness(input: {
   const supplier = input.supplier ?? '';
   const month = input.month ?? '';
   const scoped = input.lines.filter((line) => inScope(line, supplier, month));
-  const excludedQty = scoped
-    .filter((line) => line.excluded)
-    .reduce((sum, line) => sum + line.orderQty, 0);
-  const allocated = scoped
-    .filter((line) => !line.excluded)
-    .flatMap((line) => {
-      const row = allocate(line, input.receipts, graceDays, input.today);
-      return row ? [row] : [];
-    });
+  const allocated = scoped.flatMap((line) => {
+    const row = allocate(line, graceDays, input.today);
+    return row ? [row] : [];
+  });
 
   const bySupplier = new Map<string, AllocatedLine[]>();
   for (const row of allocated) {
@@ -464,7 +406,6 @@ export function evaluateTimeliness(input: {
     });
 
   return {
-    excludedQty,
     suppliers,
     monthRates,
     details,

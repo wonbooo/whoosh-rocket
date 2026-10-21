@@ -6,6 +6,7 @@ import {
 } from '@/features/supplier/aggregate';
 import {
   evaluateTimeliness,
+  matchesLine,
   type ArrivalReceipt,
   type PurchaseLine,
 } from '@/features/supplier/timeliness';
@@ -167,19 +168,12 @@ function leadDays(
     }
     let remaining = line.orderQty;
     const matched = receipts
-      .filter((receipt) => {
-        if (!(receipt.qty > 0) || receipt.date > today) {
-          return false;
-        }
-        if (line.entryId) {
-          return receipt.entryId === line.entryId;
-        }
-        return (
-          !receipt.entryId &&
-          receipt.billNo === line.billNo &&
-          receipt.materialNumber === line.materialNumber
-        );
-      })
+      .filter(
+        (receipt) =>
+          receipt.qty > 0 &&
+          receipt.date <= today &&
+          matchesLine(line, receipt),
+      )
       .sort((left, right) => left.date.localeCompare(right.date));
     for (const receipt of matched) {
       const take = Math.min(receipt.qty, remaining);

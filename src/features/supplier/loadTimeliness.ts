@@ -245,6 +245,9 @@ function readPurchase(
     deliveryDate,
     ...(fields.amount ? { amount: asAmount(read(fields.amount)) } : {}),
     ...(fields.orderDate ? { orderDate: asDate(read(fields.orderDate)) } : {}),
+    ...(fields.receivedQty
+      ? { receivedQty: asQty(read(fields.receivedQty)) }
+      : {}),
     excluded: isExcluded([
       asText(read(fields.closeStatus)),
       asText(read(fields.mrpClose)),
@@ -264,8 +267,11 @@ function readReceipt(
   if (!date) {
     return null;
   }
+  const orderEntryId = fields.orderEntryId
+    ? asText(read(fields.orderEntryId)).trim()
+    : '';
   return {
-    entryId: asText(read(fields.entryId)).trim(),
+    entryId: orderEntryId || asText(read(fields.entryId)).trim(),
     billNo: asText(read(fields.billNo)).trim(),
     materialNumber: asText(read(fields.materialNumber)).trim(),
     date,
@@ -317,6 +323,7 @@ export async function loadArrivalSources(today: Date): Promise<ArrivalSources> {
     purchaseFields.mrpTerminate,
     purchaseFields.amount ?? '',
     purchaseFields.orderDate ?? '',
+    purchaseFields.receivedQty ?? '',
   ].filter((key) => key.length > 0);
   const purchaseFilter = [
     "FDocumentStatus = 'C'",
@@ -338,7 +345,8 @@ export async function loadArrivalSources(today: Date): Promise<ArrivalSources> {
     receiveFields.billNo,
     receiveFields.entryId,
     receiveFields.materialNumber,
-  ];
+    receiveFields.orderEntryId ?? '',
+  ].filter((key) => key.length > 0);
   const instockKeys = [
     instockFields.date,
     instockFields.qty,
@@ -346,6 +354,7 @@ export async function loadArrivalSources(today: Date): Promise<ArrivalSources> {
     instockFields.entryId,
     instockFields.materialNumber,
     instockFields.amount ?? '',
+    instockFields.orderEntryId ?? '',
   ].filter((key) => key.length > 0);
   const [receiveRows, instockRows] = await Promise.all([
     queryRangeRows(

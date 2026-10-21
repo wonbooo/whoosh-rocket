@@ -19,7 +19,6 @@ import {
   evaluateTimeliness,
   formatDelay,
   formatQty,
-  type ArrivalReceipt,
   type PurchaseLine,
   type TimelinessEvaluation,
 } from '@/features/supplier/timeliness';
@@ -77,19 +76,11 @@ function supplierNames(lines: PurchaseLine[]): string[] {
   );
 }
 
-function receiptsFor(
-  sources: ArrivalSources,
-  source: 'receive' | 'instock',
-): ArrivalReceipt[] {
-  return source === 'instock' ? sources.instock : sources.receive;
-}
-
 export interface ArrivalPanelState {
   sources: ArrivalSources | null;
   loading: boolean;
   error: string | null;
   graceDays: number;
-  source: 'receive' | 'instock';
 }
 
 export function TimelinessPanel({
@@ -117,9 +108,8 @@ export function TimelinessPanel({
   const [loading, setLoading] = useState(Boolean(sessionId));
   const [error, setError] = useState<string | null>(null);
   const [graceText, setGraceText] = useState('2');
-  const [source, setSource] = useState<'receive' | 'instock'>('receive');
-  const arrivalExtras = useRef({ graceText, source, onArrivalState });
-  arrivalExtras.current = { graceText, source, onArrivalState };
+  const arrivalExtras = useRef({ graceText, onArrivalState });
+  arrivalExtras.current = { graceText, onArrivalState };
   const todayText = useMemo(() => formatToday(today), [today]);
   const rangeMonths = useMemo(
     () => months.filter((item) => monthInRange(item, monthFrom, monthTo)),
@@ -145,7 +135,6 @@ export function TimelinessPanel({
             loading: false,
             error: null,
             graceDays: parseGrace(extras.graceText),
-            source: extras.source,
           });
         }
       })
@@ -161,7 +150,6 @@ export function TimelinessPanel({
             loading: false,
             error: message,
             graceDays: parseGrace(extras.graceText),
-            source: extras.source,
           });
         }
       });
@@ -185,12 +173,12 @@ export function TimelinessPanel({
       lines: sources.lines.filter((line) =>
         matchSupplier(line.supplier, supplier, supplierOp),
       ),
-      receipts: receiptsFor(sources, source),
+      receipts: [],
       graceDays: parseGrace(graceText),
       today: todayText,
       months,
     });
-  }, [graceText, months, source, sources, supplier, supplierOp, todayText]);
+  }, [graceText, months, sources, supplier, supplierOp, todayText]);
   const result = useMemo(() => {
     if (!sources) {
       return null;
@@ -202,7 +190,7 @@ export function TimelinessPanel({
     );
     return evaluateTimeliness({
       lines,
-      receipts: receiptsFor(sources, source),
+      receipts: [],
       graceDays: parseGrace(graceText),
       today: todayText,
       months: rangeMonths,
@@ -213,7 +201,6 @@ export function TimelinessPanel({
     monthTo,
     rangeMonths,
     supplierOp,
-    source,
     sources,
     supplier,
     todayText,
@@ -246,40 +233,15 @@ export function TimelinessPanel({
                     loading,
                     error,
                     graceDays: parseGrace(next),
-                    source,
                   });
                 }}
               />
-            </label>
-            <label className="flex items-center gap-2">
-              实际到货日期
-              <select
-                aria-label="实际到货日期"
-                className={selectClass}
-                value={source}
-                onChange={(event) => {
-                  const next =
-                    event.target.value === 'instock' ? 'instock' : 'receive';
-                  setSource(next);
-                  onArrivalState?.({
-                    sources,
-                    loading,
-                    error,
-                    graceDays: parseGrace(graceText),
-                    source: next,
-                  });
-                }}
-              >
-                <option value="receive">收料通知单</option>
-                <option value="instock">采购入库单</option>
-              </select>
             </label>
           </div>
         ) : null}
       </div>
       <p className="mb-3 text-sm text-zinc-500 dark:text-zinc-400">
-        按交货日期归月，按数量计算。及时率 = 准时已交货数量（含宽限天数内）/
-        订单数量。未到数量按今天是否超过宽限截止日拆成准时未交货和逾期未交货，逾期天数对已到货按实际到货日、对逾期未交货按今天计算。
+        按交货日期归月，按数量计算，口径与金蝶到货及时率一致：累计收货数量达到订单数量即算准时已交货，不再按收货单的日期追溯。没收满的数量在宽限截止日及之前算准时未交货，过了截止日算逾期未交货，逾期天数按今天计算。
       </p>
       {!sessionId ? (
         <p className="text-sm text-zinc-500 dark:text-zinc-400">
@@ -302,7 +264,7 @@ export function TimelinessPanel({
         ) : (
           <>
             <p className="mb-3 text-sm text-zinc-500 dark:text-zinc-400">
-              已剔除关闭、冻结、终止的订单数量 {formatQty(result.excludedQty)}
+              按金蝶口径统计，关闭、冻结、终止的订单行也计入。
             </p>
             <DashboardGrid
               storageKey={LAYOUT_KEY}

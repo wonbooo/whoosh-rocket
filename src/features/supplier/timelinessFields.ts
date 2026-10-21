@@ -15,6 +15,8 @@ export interface PurchaseFields {
   cancelStatus: string;
   amount?: string;
   orderDate?: string;
+  /** 累计收货数量，金蝶字段 FReceiveQty，元数据里不一定暴露。 */
+  receivedQty?: string;
 }
 
 export interface ArrivalBillFields {
@@ -24,6 +26,8 @@ export interface ArrivalBillFields {
   entryId: string;
   materialNumber: string;
   amount?: string;
+  /** 收料/入库单关联的采购订单分录内码，通常是 FPOORDERENTRYID。 */
+  orderEntryId?: string;
 }
 
 function isLookup(field: CatalogField): boolean {
@@ -163,6 +167,7 @@ export function resolvePurchaseFields(catalog: FieldCatalog): {
     ...(entryId ? { entryId } : {}),
     ...(amount ? { amount } : {}),
     ...(orderDate ? { orderDate: orderDate.key } : {}),
+    receivedQty: 'FReceiveQty',
     closeStatus: statusKey(catalog, '关闭状态', 'FCloseStatus'),
     mrpClose: statusKey(catalog, '业务关闭', 'FMRPCloseStatus'),
     mrpFreeze: statusKey(catalog, '业务冻结', 'FMRPFreezeStatus'),
@@ -228,6 +233,9 @@ function resolveArrivalFields(
       ? { materialNumber: material.materialNumber }
       : {}),
     ...(amount ? { amount } : {}),
+    // 金蝶实际存储的关联字段是 FPOORDERENTRYID，元数据里通常没有这个键，
+    // 所以按约定直接查询，读不到时留空走订单编号回退。
+    orderEntryId: 'FPOORDERENTRYID',
   };
   const missing = [
     fields.date ? '' : '日期',

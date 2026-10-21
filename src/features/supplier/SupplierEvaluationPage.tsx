@@ -148,10 +148,7 @@ export function SupplierEvaluationPage() {
     return buildPortraits({
       inspect: lines ?? [],
       lines: sources?.lines ?? [],
-      receipts:
-        arrival?.source === 'instock'
-          ? (sources?.instock ?? [])
-          : (sources?.receive ?? []),
+      receipts: sources?.receive ?? [],
       instock: sources?.instock ?? [],
       monthFrom,
       monthTo,

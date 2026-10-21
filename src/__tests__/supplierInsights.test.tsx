@@ -37,6 +37,7 @@ function line(overrides: Partial<PurchaseLine> = {}): PurchaseLine {
     excluded: false,
     amount: 200_000,
     orderDate: '2026-09-28',
+    receivedQty: 10,
     ...overrides,
   };
 }

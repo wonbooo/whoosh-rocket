@@ -139,6 +139,7 @@ describe('loadArrivalSources', () => {
             FMRPCloseStatus: 'A',
             FMRPFreezeStatus: 'A',
             FMRPTerminateStatus: 'A',
+            FReceiveQty: 6,
           }),
           valuesFor(fieldKeys, {
             FBillNo: 'PO-2',
@@ -157,12 +158,14 @@ describe('loadArrivalSources', () => {
         return { rows, rowCount: rows.length, truncated: false };
       }
       if (params.formId === 'PUR_ReceiveBill') {
+        expect(fieldKeys).toContain('FPOORDERENTRYID');
         const rows = [
           valuesFor(fieldKeys, {
             FDate: '2026-10-01',
             FActReceiveQty: 6,
             FOrderBillNo: 'PO-1',
-            FPOOrderEntryId: 'E1',
+            FPOOrderEntryId: '',
+            FPOORDERENTRYID: 'E1',
             'FMaterialId.FNumber': 'M-1',
           }),
         ];
@@ -188,6 +191,7 @@ describe('loadArrivalSources', () => {
     expect(purchaseCall?.filterString).toContain(
       `FDeliveryDate >= '${windows.delivery.dateFrom}'`,
     );
+    expect(purchaseCall?.fieldKeys).toContain('FReceiveQty');
     expect(purchaseCall?.filterString).toContain("FDocumentStatus = 'C'");
     expect(purchaseCall?.filterString).toContain("FCancelStatus = 'A'");
     const receiveCall = vi
@@ -209,6 +213,7 @@ describe('loadArrivalSources', () => {
         orderQty: 10,
         deliveryDate: '2026-10-01',
         excluded: false,
+        receivedQty: 6,
       },
       {
         supplier: '乙供',
@@ -219,6 +224,7 @@ describe('loadArrivalSources', () => {
         orderQty: 4,
         deliveryDate: '2026-10-02',
         excluded: true,
+        receivedQty: 0,
       },
     ]);
     expect(loaded.receive).toEqual([

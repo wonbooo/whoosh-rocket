@@ -112,6 +112,7 @@ describe('resolvePurchaseFields', () => {
     expect(resolved.missing).toEqual([]);
     expect(resolved.fields.amount).toBe('FAllAmount');
     expect(resolved.fields.orderDate).toBe('FDate');
+    expect(resolved.fields.receivedQty).toBe('FReceiveQty');
   });
 });
 
@@ -135,6 +136,7 @@ describe('resolveReceiveFields', () => {
       billNo: 'FOrderBillNo',
       entryId: 'FPOOrderEntryId',
       materialNumber: 'FMaterialId.FNumber',
+      orderEntryId: 'FPOORDERENTRYID',
     });
   });
 });
@@ -167,6 +169,7 @@ describe('resolveInstockFields', () => {
       billNo: 'FPOOrderNo',
       entryId: 'FPOOrderEntryId',
       materialNumber: 'FMaterialId.FNumber',
+      orderEntryId: 'FPOORDERENTRYID',
     });
   });
 });

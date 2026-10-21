@@ -49,12 +49,12 @@ afterEach(() => {
 });
 
 describe('TimelinessPanel', () => {
-  it('recalculates when grace days or the arrival document changes', async () => {
+  it('rates a line by its received quantity and keeps closed lines', async () => {
     const user = userEvent.setup();
     const onCatalog = vi.fn();
     vi.mocked(loadArrivalSources).mockResolvedValue({
       lines: [
-        line(),
+        line({ receivedQty: 10 }),
         line({
           supplier: '乙供',
           billNo: 'PO-2',
@@ -73,26 +73,11 @@ describe('TimelinessPanel', () => {
           orderQty: 4,
           deliveryDate: '2026-10-02',
           excluded: true,
+          receivedQty: 4,
         }),
       ],
-      receive: [
-        {
-          entryId: 'E1',
-          billNo: 'PO-1',
-          materialNumber: 'M-1',
-          date: '2026-10-01',
-          qty: 10,
-        },
-      ],
-      instock: [
-        {
-          entryId: 'E1',
-          billNo: 'PO-1',
-          materialNumber: 'M-1',
-          date: '2026-10-04',
-          qty: 10,
-        },
-      ],
+      receive: [],
+      instock: [],
     });
 
     render(
@@ -107,13 +92,14 @@ describe('TimelinessPanel', () => {
       />,
     );
 
-    const onTime = formatRate(10 / 12);
+    const onTime = formatRate(14 / 16);
     expect(await screen.findByText(onTime)).toBeInTheDocument();
     expect(loadArrivalSources).toHaveBeenCalledTimes(1);
     expect(
-      screen.getByText('已剔除关闭、冻结、终止的订单数量 4'),
+      screen.getByText('按金蝶口径统计，关闭、冻结、终止的订单行也计入。'),
     ).toBeInTheDocument();
     expect(screen.getAllByText('未到件').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('关闭件').length).toBeGreaterThan(0);
     expect(onCatalog.mock.calls.at(-1)?.[0]).toEqual(
       ['甲供', '乙供', '丙供'].sort((left, right) =>
         left.localeCompare(right, 'zh'),
@@ -125,33 +111,17 @@ describe('TimelinessPanel', () => {
       }),
     ).toBeInTheDocument();
 
-    await user.selectOptions(screen.getByLabelText('实际到货日期'), 'instock');
-    expect(loadArrivalSources).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId('overall-timeliness-rate')).toHaveTextContent(
-      '0.00%',
-    );
-    expect(
-      screen.getByRole('img', {
-        name: /逾期与未交货：甲供 逾期已交货 10、逾期未交货 0、准时未交货 0/,
-      }),
-    ).toBeInTheDocument();
-    const detail = screen
-      .getByRole('heading', { name: '订单到货明细' })
-      .closest('section');
-    expect(within(detail as HTMLElement).getByText('3.0')).toBeInTheDocument();
-
     const grace = screen.getByLabelText('宽限天数');
     expect(grace).toHaveValue(2);
     await user.clear(grace);
-    await user.type(grace, '3');
+    await user.type(grace, '0');
     expect(screen.getByTestId('overall-timeliness-rate')).toHaveTextContent(
       onTime,
     );
     expect(
-      within(detail as HTMLElement).queryByText('3.0'),
-    ).not.toBeInTheDocument();
-    expect(
-      within(detail as HTMLElement).getByText('2026-10-04'),
+      screen.getByRole('img', {
+        name: /逾期与未交货：乙供 逾期已交货 0、逾期未交货 2、准时未交货 0/,
+      }),
     ).toBeInTheDocument();
   });
 });

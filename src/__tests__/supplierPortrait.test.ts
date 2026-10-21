@@ -54,6 +54,7 @@ describe('buildPortraits', () => {
           deliveryDate: '2026-09-20',
           orderDate: '2026-09-18',
           amount: 80_000,
+          receivedQty: 10,
         }),
         line({
           billNo: 'PO-OCT',
@@ -61,6 +62,7 @@ describe('buildPortraits', () => {
           deliveryDate: '2026-10-01',
           orderDate: '2026-09-25',
           amount: 100_000,
+          receivedQty: 10,
         }),
         line({
           supplier: '乙供',
@@ -133,7 +135,7 @@ describe('buildPortraits', () => {
   it('leaves amount and lead time empty when those fields were not loaded', () => {
     const [row] = buildPortraits({
       inspect: [],
-      lines: [line()],
+      lines: [line({ receivedQty: 10 })],
       receipts: [receipt()],
       instock: [],
       months: ['2026-10'],
