@@ -72,6 +72,74 @@ function normalizeWidget(widget: Widget): Widget {
   };
 }
 
+export interface BoardExport {
+  kind: 'whoosh-board';
+  version: 1;
+  name: string;
+  filters: SavedBoardTemplate['filters'];
+  widgets: SavedBoardTemplate['widgets'];
+  datasets: SavedBoardTemplate['datasets'];
+}
+
+/** 看板导出文件：看板本身加上它引用的数据集，不含本地 id。 */
+export function boardExport(
+  dashboard: Dashboard,
+  datasets: Dataset[],
+): BoardExport {
+  const referenced = new Set<string>();
+  for (const widget of dashboard.widgets) {
+    if (widget.datasetId) {
+      referenced.add(widget.datasetId);
+    }
+    for (const source of widget.sources ?? []) {
+      referenced.add(source);
+    }
+  }
+  return {
+    kind: 'whoosh-board',
+    version: 1,
+    name: dashboard.name,
+    filters: dashboard.filters.map((filter) => ({ ...filter })),
+    widgets: dashboard.widgets.map((widget) => ({
+      ...widget,
+      sources: [...(widget.sources ?? [])],
+      layout: { ...widget.layout },
+    })),
+    datasets: datasets
+      .filter((dataset) => referenced.has(dataset.id))
+      .map((dataset) => {
+        const copy = { ...dataset };
+        delete copy.dashboardId;
+        delete copy.origin;
+        return copy;
+      }),
+  };
+}
+
+/** 读入别人导出的看板文件；格式不对返回 null。 */
+export function parseBoardExport(text: string): SavedBoardTemplate | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    return null;
+  }
+  const item = parsed as Partial<BoardExport>;
+  if (item.kind !== 'whoosh-board' || item.version !== 1) {
+    return null;
+  }
+  return normalizeSavedTemplate({
+    id: 'imported',
+    name: item.name,
+    datasets: item.datasets,
+    filters: item.filters,
+    widgets: item.widgets,
+  });
+}
+
 export function normalizeSavedTemplate(
   value: unknown,
 ): SavedBoardTemplate | null {

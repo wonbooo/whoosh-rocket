@@ -113,6 +113,98 @@ describe('board overview', () => {
     expect(useAnalysisStore.getState().datasets).toEqual([]);
   });
 
+  it('exports a board and imports the file as a new board', async () => {
+    const dataset = {
+      id: 'ds-1',
+      name: '采购分析',
+      formId: 'PUR_PurchaseOrder',
+      dimension: { field: 'FMaterialId', display: 'name' as const },
+      series: null,
+      seriesCases: [],
+      measure: { field: '', display: 'value' as const },
+      aggregation: 'count' as const,
+      columns: [],
+      filters: [],
+      limit: 20,
+      chartType: 'bar' as const,
+      dashboardId: 'board-1',
+    };
+    useAnalysisStore.setState({
+      dashboards: [
+        {
+          id: 'board-1',
+          name: '经营看板',
+          filters: [],
+          widgets: [
+            {
+              id: 'w-1',
+              title: '采购分析',
+              datasetId: 'ds-1',
+              chartType: 'bar',
+              sources: [],
+              layout: { x: 0, y: 0, w: 6, h: 8 },
+            },
+          ],
+        },
+      ],
+      datasets: [dataset],
+    });
+    const downloads: { name: string; text: string }[] = [];
+    const createObjectURL = URL.createObjectURL;
+    const revokeObjectURL = URL.revokeObjectURL;
+    URL.createObjectURL = () => 'blob:board';
+    URL.revokeObjectURL = () => {};
+    const click = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function clickDownload() {
+      downloads.push({
+        name: this.download,
+        text: String(this.href),
+      });
+    };
+    const user = userEvent.setup();
+    render(<AnalysisPage />);
+
+    await user.click(screen.getByRole('button', { name: '导出 经营看板' }));
+
+    expect(downloads).toEqual([
+      { name: '经营看板.whoosh-board.json', text: 'blob:board' },
+    ]);
+    URL.createObjectURL = createObjectURL;
+    URL.revokeObjectURL = revokeObjectURL;
+    HTMLAnchorElement.prototype.click = click;
+
+    const file = new File(
+      [
+        JSON.stringify({
+          kind: 'whoosh-board',
+          version: 1,
+          name: '经营看板',
+          filters: [],
+          widgets: [
+            {
+              id: 'w-1',
+              title: '采购分析',
+              datasetId: 'ds-1',
+              chartType: 'bar',
+              sources: [],
+              layout: { x: 0, y: 0, w: 6, h: 8 },
+            },
+          ],
+          datasets: [{ ...dataset }],
+        }),
+      ],
+      '经营看板.whoosh-board.json',
+      { type: 'application/json' },
+    );
+    await user.upload(screen.getByLabelText('选择看板文件'), file);
+    expect(
+      await screen.findByRole('textbox', { name: '看板名称' }),
+    ).toHaveValue('经营看板 2');
+    expect(
+      useAnalysisStore.getState().dashboards.map((item) => item.name),
+    ).toEqual(['经营看板', '经营看板 2']);
+  });
+
   it('asks for a unique dashboard name before creating from a template', async () => {
     useAnalysisStore.setState({
       dashboards: [

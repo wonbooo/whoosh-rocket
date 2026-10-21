@@ -1,4 +1,8 @@
-import { normalizeDataset } from '@/features/analysis/normalize';
+import {
+  normalizeDataset,
+  boardExport,
+  parseBoardExport,
+} from '@/features/analysis/normalize';
 import {
   aggregate,
   compileFilter,
@@ -42,6 +46,7 @@ import type { PersistedRecord } from '@/lib/persistedRecord';
 import {
   BOARD_TEMPLATES,
   instantiateTemplate,
+  instantiateImportedBoard,
 } from '@/features/analysis/templates';
 import { groupOverlaps } from '@/features/analysis/overlap';
 import { findTheme } from '@/features/analysis/themes';
@@ -1799,6 +1804,44 @@ describe('board templates', () => {
     expect(after.datasets.map((item) => item.id).sort()).toEqual(
       second.datasets.map((item) => item.id).sort(),
     );
+  });
+
+  it('exports a board with the datasets it uses and imports it as a new board', () => {
+    const board = instantiateTemplate(template!);
+    const foreign = dataset({ id: 'other-board-dataset' });
+    const exported = boardExport(board.dashboard, [...board.datasets, foreign]);
+    expect(exported.kind).toBe('whoosh-board');
+    expect(exported.name).toBe('采购入库看板');
+    expect(exported.datasets).toHaveLength(board.datasets.length);
+    expect(exported.datasets.map((item) => item.id)).not.toContain(foreign.id);
+    expect(exported.datasets[0]).not.toHaveProperty('dashboardId');
+    expect(exported.widgets).toHaveLength(board.dashboard.widgets.length);
+
+    const parsed = parseBoardExport(JSON.stringify(exported));
+    expect(parsed?.name).toBe('采购入库看板');
+    expect(parseBoardExport('{not json')).toBeNull();
+    expect(parseBoardExport(JSON.stringify({ kind: 'other' }))).toBeNull();
+
+    const imported = instantiateImportedBoard(parsed!, '本月入库');
+    expect(imported.dashboard.name).toBe('本月入库');
+    expect(imported.dashboard.id).not.toBe(board.dashboard.id);
+    expect(imported.datasets.map((item) => item.id)).not.toEqual(
+      board.datasets.map((item) => item.id),
+    );
+    expect(imported.datasets.every((item) => item.origin == null)).toBe(true);
+    expect(new Set(imported.datasets.map((item) => item.dashboardId))).toEqual(
+      new Set([imported.dashboard.id]),
+    );
+    const amount = imported.datasets.find(
+      (item) => item.name === '采购金额·订单',
+    );
+    expect(
+      imported.dashboard.widgets.find((item) => item.datasetId === amount?.id)
+        ?.sources,
+    ).toEqual([
+      imported.datasets.find((item) => item.name === '采购金额·入库')?.id,
+      imported.datasets.find((item) => item.name === '采购金额·退料')?.id,
+    ]);
   });
 
   it('physically deletes a template and its unowned datasets', () => {

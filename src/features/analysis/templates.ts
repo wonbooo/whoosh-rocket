@@ -415,23 +415,46 @@ export function instantiateSavedTemplate(
   template: SavedBoardTemplate,
   dashboardName: string,
 ): InstantiatedBoard {
+  return instantiateBoard(template, dashboardName.trim(), template.id);
+}
+
+/** 把别人导出的看板配置变成一块全新的看板，数据集和图表都换新 id。 */
+export function instantiateImportedBoard(
+  board: SavedBoardTemplate,
+  dashboardName: string,
+): InstantiatedBoard {
+  return instantiateBoard(board, dashboardName.trim(), null);
+}
+
+function instantiateBoard(
+  board: SavedBoardTemplate,
+  name: string,
+  templateId: string | null,
+): InstantiatedBoard {
   const dashboardId = crypto.randomUUID();
   const idMap = new Map(
-    template.datasets.map((dataset) => [dataset.id, crypto.randomUUID()]),
+    board.datasets.map((dataset) => [dataset.id, crypto.randomUUID()]),
   );
-  const datasets = template.datasets.map((dataset) => ({
-    ...dataset,
-    id: idMap.get(dataset.id) ?? crypto.randomUUID(),
-    dashboardId,
-    origin: { templateId: template.id },
-  }));
+  const datasets = board.datasets.map((dataset) => {
+    const next = {
+      ...dataset,
+      id: idMap.get(dataset.id) ?? crypto.randomUUID(),
+      dashboardId,
+    };
+    if (templateId) {
+      next.origin = { templateId };
+    } else {
+      delete next.origin;
+    }
+    return next;
+  });
   return {
     datasets,
     dashboard: {
       id: dashboardId,
-      name: dashboardName.trim(),
-      filters: template.filters.map((filter) => ({ ...filter })),
-      widgets: template.widgets.map((widget) => ({
+      name,
+      filters: board.filters.map((filter) => ({ ...filter })),
+      widgets: board.widgets.map((widget) => ({
         ...widget,
         id: crypto.randomUUID(),
         datasetId: idMap.get(widget.datasetId) ?? widget.datasetId,

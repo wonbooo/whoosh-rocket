@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Maximize2, Minimize2, Settings, Trash2, X } from 'lucide-react';
+import {
+  Download,
+  Maximize2,
+  Minimize2,
+  Settings,
+  Trash2,
+  Upload,
+  X,
+} from 'lucide-react';
 import GridLayout, { getCompactor, useContainerWidth } from 'react-grid-layout';
 import type { LayoutItem } from 'react-grid-layout';
 import { formatKingdeeError } from '@/apis/kingdee/client';
@@ -52,6 +60,7 @@ import { DETAIL_PAGE_SIZE } from '@/features/analysis/merge';
 import { useAnalysisStore } from '@/features/analysis/store';
 import { findTheme } from '@/features/analysis/themes';
 import type { BoardTheme } from '@/features/analysis/themes';
+import { boardExport, parseBoardExport } from '@/features/analysis/normalize';
 import {
   groupOverlaps,
   droppedOn,
@@ -61,6 +70,7 @@ import {
   BOARD_TEMPLATES,
   instantiateSavedTemplate,
   instantiateTemplate,
+  instantiateImportedBoard,
 } from '@/features/analysis/templates';
 import type {
   ChartType,
@@ -328,6 +338,15 @@ function duplicateName(name: string, names: string[]): boolean {
   return trimmed.length > 0 && names.some((item) => item.trim() === trimmed);
 }
 
+function readFileText(file: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ''));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(file);
+  });
+}
+
 function widgetTitle(widget: Widget, datasets: Dataset[]): string {
   const name = datasets
     .find((dataset) => dataset.id === widget.datasetId)
@@ -452,6 +471,44 @@ export function AnalysisPage() {
           onHideTemplate={deleteTemplate}
           onOpenDashboard={setOpenDashboard}
           onDeleteDashboard={deleteDashboard}
+          onExportDashboard={(dashboard) => {
+            const exported = boardExport(dashboard, datasets);
+            const blob = new Blob([JSON.stringify(exported, null, 2)], {
+              type: 'application/json',
+            });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            link.href = url;
+            link.download = `${dashboard.name.trim() || '看板'}.whoosh-board.json`;
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(url));
+          }}
+          onImportBoard={(text) => {
+            const imported = parseBoardExport(text);
+            if (!imported) {
+              toast({
+                title: '导入失败',
+                description: '这个文件不是看板导出文件',
+              });
+              return;
+            }
+            const taken = new Set(dashboards.map((item) => item.name.trim()));
+            let name = imported.name.trim() || '导入的看板';
+            if (taken.has(name)) {
+              let suffix = 2;
+              while (taken.has(`${name} ${suffix}`)) {
+                suffix += 1;
+              }
+              name = `${name} ${suffix}`;
+            }
+            const board = instantiateImportedBoard(imported, name);
+            applyTemplate(board);
+            setOpenDashboard(board.dashboard.id);
+            toast({
+              title: '看板已导入',
+              description: `${board.dashboard.name}，含 ${board.datasets.length} 个数据集`,
+            });
+          }}
           onCreateDashboard={() => {
             const created: Dashboard = {
               id: newId(),
@@ -497,6 +554,8 @@ function Overview({
   onHideTemplate,
   onOpenDashboard,
   onDeleteDashboard,
+  onExportDashboard,
+  onImportBoard,
   onCreateDashboard,
   onApplyTemplate,
 }: {
@@ -506,6 +565,8 @@ function Overview({
   onHideTemplate: (id: string) => void;
   onOpenDashboard: (id: string) => void;
   onDeleteDashboard: (id: string) => void;
+  onExportDashboard: (dashboard: Dashboard) => void;
+  onImportBoard: (text: string) => void;
   onCreateDashboard: () => void;
   onApplyTemplate: (templateId: string, dashboardName: string) => void;
 }) {
@@ -520,6 +581,7 @@ function Overview({
     | null
   >(null);
   const [boardName, setBoardName] = useState('');
+  const importInput = useRef<HTMLInputElement>(null);
   const boardNameTaken = duplicateName(
     boardName,
     dashboards.map((item) => item.name),
@@ -565,6 +627,31 @@ function Overview({
                 });
               }}
             />
+            <button
+              type="button"
+              aria-label="导入看板"
+              title="导入看板"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border"
+              style={{ borderColor: theme.border, color: theme.text }}
+              onClick={() => importInput.current?.click()}
+            >
+              <Upload className="h-4 w-4" />
+            </button>
+            <input
+              ref={importInput}
+              type="file"
+              accept="application/json,.json"
+              aria-label="选择看板文件"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = '';
+                if (!file) {
+                  return;
+                }
+                void readFileText(file).then(onImportBoard);
+              }}
+            />
             <Button type="button" size="sm" onClick={onCreateDashboard}>
               新建看板
             </Button>
@@ -597,6 +684,24 @@ function Overview({
                   <div className="text-xs" style={muted}>
                     {dashboard.widgets.length} 个图表
                   </div>
+                </button>
+                <button
+                  type="button"
+                  aria-label={`导出 ${dashboard.name}`}
+                  title="导出看板配置"
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
+                  style={{ color: theme.textMuted }}
+                  onMouseEnter={(event) => {
+                    event.currentTarget.style.background = theme.panelAlt;
+                    event.currentTarget.style.color = theme.text;
+                  }}
+                  onMouseLeave={(event) => {
+                    event.currentTarget.style.background = 'transparent';
+                    event.currentTarget.style.color = theme.textMuted;
+                  }}
+                  onClick={() => onExportDashboard(dashboard)}
+                >
+                  <Download className="h-4 w-4" />
                 </button>
                 <button
                   type="button"
