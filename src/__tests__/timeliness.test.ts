@@ -1,6 +1,5 @@
 import {
   evaluateTimeliness,
-  type ArrivalReceipt,
   type PurchaseLine,
 } from '@/features/supplier/timeliness';
 
@@ -17,17 +16,6 @@ function line(overrides: Partial<PurchaseLine> = {}): PurchaseLine {
     deliveryDate: '2026-10-01',
     excluded: false,
     receivedQty: 0,
-    ...overrides,
-  };
-}
-
-function receipt(overrides: Partial<ArrivalReceipt> = {}): ArrivalReceipt {
-  return {
-    entryId: 'E1',
-    billNo: 'PO-1',
-    materialNumber: 'M-1',
-    date: '2026-09-28',
-    qty: 40,
     ...overrides,
   };
 }
