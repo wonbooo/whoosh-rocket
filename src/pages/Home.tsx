@@ -95,10 +95,6 @@ export default function Home() {
                 <Icon className="h-5 w-5" />
               </div>
               <div className="text-base font-semibold">{item.title}</div>
-              <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-                在系统中新增
-                <span className="text-blue-600">{item.formLabel}</span>
-              </p>
             </button>
           );
         })}
@@ -118,9 +114,6 @@ export default function Home() {
             <LineChart className="h-5 w-5" />
           </div>
           <div className="text-base font-semibold">数据分析</div>
-          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-            按维度汇总金蝶单据并绘图
-          </p>
         </Link>
         <Link
           to="/supplier"
@@ -130,9 +123,6 @@ export default function Home() {
             <ClipboardCheck className="h-5 w-5" />
           </div>
           <div className="text-base font-semibold">供应商评价</div>
-          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-            汇总近 6 个月到货合格率、到货及时率和售后客诉
-          </p>
         </Link>
       </div>
       <AftersaleOrderDialog
