@@ -56,6 +56,17 @@ describe('AftersaleOrderDialog', () => {
     fireEvent.change(screen.getByLabelText('上传 Excel 文件'), {
       target: { files: [file] },
     });
+    const selectAll = await screen.findByRole('checkbox', {
+      name: '全选所有明细',
+    });
+    await user.click(selectAll);
+    expect(
+      screen.getByRole('checkbox', { name: '选择 BCDJS10063' }),
+    ).toBeChecked();
+    await user.click(selectAll);
+    expect(
+      screen.getByRole('checkbox', { name: '选择 BCDJS10063' }),
+    ).not.toBeChecked();
     await user.click(
       await screen.findByRole('checkbox', { name: '选择供应商 CP00220' }),
     );
@@ -63,7 +74,7 @@ describe('AftersaleOrderDialog', () => {
 
     expect(await screen.findByText('REQ001')).toBeInTheDocument();
     const billScroller = screen.getByText('REQ001').closest('div');
-    expect(billScroller?.className).toContain('max-h-[240px]');
+    expect(billScroller?.className).toContain('min-h-[180px]');
     expect(billScroller?.className).toContain('overflow-y-auto');
     expect(screen.getByRole('button', { name: '提交' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '审核' })).toBeInTheDocument();

@@ -85,6 +85,17 @@ describe('PackagingOrderDialog', () => {
     });
     const innerA = screen.getByRole('checkbox', { name: '选择 BCDJS10063' });
     const innerB = screen.getByRole('checkbox', { name: '选择 BCDJS10101' });
+    const selectAll = screen.getByRole('checkbox', {
+      name: '全选所有明细',
+    });
+
+    await user.click(selectAll);
+    expect(innerA).toBeChecked();
+    expect(innerB).toBeChecked();
+
+    await user.click(selectAll);
+    expect(innerA).not.toBeChecked();
+    expect(innerB).not.toBeChecked();
 
     await user.click(outer);
     expect(innerA).toBeChecked();
@@ -155,7 +166,7 @@ describe('PackagingOrderDialog', () => {
 
     expect(await screen.findByText('RK001')).toBeInTheDocument();
     const billScroller = screen.getByText('RK001').closest('div');
-    expect(billScroller?.className).toContain('max-h-[240px]');
+    expect(billScroller?.className).toContain('min-h-[180px]');
     expect(billScroller?.className).toContain('overflow-y-auto');
     expect(screen.getByRole('button', { name: '提交' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '审核' })).toBeInTheDocument();

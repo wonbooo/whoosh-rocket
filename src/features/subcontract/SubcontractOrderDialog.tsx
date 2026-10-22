@@ -71,6 +71,9 @@ export function SubcontractOrderDialog({
 
   const groups = groupSubcontractBySupplier(rows);
   const selectedRows = rows.filter((row) => selectedIds.has(row.id));
+  const allRowsSelected =
+    rows.length > 0 && rows.every((row) => selectedIds.has(row.id));
+  const someRowsSelected = selectedRows.length > 0 && !allRowsSelected;
   const selectedBills = createdBills.filter((bill) =>
     selectedBillKeys.has(bill.key),
   );
@@ -135,6 +138,10 @@ export function SubcontractOrderDialog({
       }
       return next;
     });
+  };
+
+  const toggleAllRows = (checked: boolean) => {
+    setSelectedIds(checked ? new Set(rows.map((row) => row.id)) : new Set());
   };
 
   const handleOrder = async () => {
@@ -273,7 +280,30 @@ export function SubcontractOrderDialog({
         </Button>
 
         {groups.length > 0 ? (
-          <div className="min-h-0 max-h-[420px] space-y-4 overflow-y-auto pr-1">
+          <div
+            className={cn(
+              'min-h-0 space-y-4 overflow-y-auto pr-1',
+              createdBills.length > 0 ? 'max-h-[240px]' : 'max-h-[420px]',
+            )}
+          >
+            <label className="flex cursor-pointer items-center gap-2 rounded-lg border bg-zinc-50 px-3 py-2 text-sm font-medium dark:bg-zinc-900">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-zinc-900 dark:accent-zinc-100"
+                checked={allRowsSelected}
+                ref={(element) => {
+                  if (element) {
+                    element.indeterminate = someRowsSelected;
+                  }
+                }}
+                onChange={(event) => toggleAllRows(event.target.checked)}
+                aria-label="全选所有明细"
+              />
+              全选所有明细
+              <span className="font-normal text-zinc-500">
+                共 {rows.length} 行
+              </span>
+            </label>
             {groups.map((group) => {
               const allChecked = group.rows.every((row) =>
                 selectedIds.has(row.id),
@@ -355,8 +385,8 @@ export function SubcontractOrderDialog({
         ) : null}
 
         {createdBills.length > 0 ? (
-          <div className="flex min-h-0 flex-col space-y-3">
-            <div className="min-h-0 max-h-[240px] overflow-y-auto rounded-lg border">
+          <div className="flex min-h-0 flex-1 flex-col space-y-3">
+            <div className="min-h-[180px] min-w-0 flex-1 overflow-y-auto rounded-lg border">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="sticky top-0 z-10 border-b bg-zinc-50 text-left text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
