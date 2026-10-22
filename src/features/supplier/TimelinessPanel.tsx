@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { LayoutItem } from 'react-grid-layout';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { SelectMenu } from '@/components/shared/SelectMenu';
 import {
   formatRate,
   matchSupplier,
@@ -7,6 +10,14 @@ import {
   type SupplierMatch,
 } from '@/features/supplier/aggregate';
 import { DashboardGrid } from '@/features/supplier/DashboardGrid';
+import {
+  LINE_FILTER_FIELDS,
+  lineFilterOperators,
+  matchesLineFilters,
+  type LineFilter,
+  type LineFilterField,
+  type LineFilterOperator,
+} from '@/features/supplier/lineFilter';
 import {
   loadArrivalSources,
   type ArrivalSources,
@@ -108,6 +119,7 @@ export function TimelinessPanel({
   const [loading, setLoading] = useState(Boolean(sessionId));
   const [error, setError] = useState<string | null>(null);
   const [graceText, setGraceText] = useState('2');
+  const [filters, setFilters] = useState<LineFilter[]>([]);
   const arrivalExtras = useRef({ graceText, onArrivalState });
   arrivalExtras.current = { graceText, onArrivalState };
   const todayText = useMemo(() => formatToday(today), [today]);
@@ -116,6 +128,13 @@ export function TimelinessPanel({
     [monthFrom, monthTo, months],
   );
   const names = useMemo(() => supplierNames(sources?.lines ?? []), [sources]);
+  const filteredLines = useMemo(
+    () =>
+      (sources?.lines ?? []).filter((line) =>
+        matchesLineFilters(line, filters),
+      ),
+    [filters, sources],
+  );
 
   useEffect(() => {
     if (!sessionId) {
@@ -170,7 +189,7 @@ export function TimelinessPanel({
       return null;
     }
     return evaluateTimeliness({
-      lines: sources.lines.filter((line) =>
+      lines: filteredLines.filter((line) =>
         matchSupplier(line.supplier, supplier, supplierOp),
       ),
       receipts: [],
@@ -178,12 +197,20 @@ export function TimelinessPanel({
       today: todayText,
       months,
     });
-  }, [graceText, months, sources, supplier, supplierOp, todayText]);
+  }, [
+    filteredLines,
+    graceText,
+    months,
+    sources,
+    supplier,
+    supplierOp,
+    todayText,
+  ]);
   const result = useMemo(() => {
     if (!sources) {
       return null;
     }
-    const lines = sources.lines.filter(
+    const lines = filteredLines.filter(
       (line) =>
         matchSupplier(line.supplier, supplier, supplierOp) &&
         monthInRange(line.deliveryDate.slice(0, 7), monthFrom, monthTo),
@@ -196,12 +223,13 @@ export function TimelinessPanel({
       months: rangeMonths,
     });
   }, [
+    filteredLines,
     graceText,
     monthFrom,
     monthTo,
     rangeMonths,
-    supplierOp,
     sources,
+    supplierOp,
     supplier,
     todayText,
   ]);
@@ -240,6 +268,9 @@ export function TimelinessPanel({
           </div>
         ) : null}
       </div>
+      {sessionId ? (
+        <FilterConditions filters={filters} onChange={setFilters} />
+      ) : null}
       {!sessionId ? (
         <p className="text-sm text-zinc-500 dark:text-zinc-400">
           连接金蝶后，这里按采购订单的交货日期汇总到货及时率。
@@ -278,6 +309,93 @@ export function TimelinessPanel({
         )
       ) : null}
     </section>
+  );
+}
+
+function FilterConditions({
+  filters,
+  onChange,
+}: {
+  filters: LineFilter[];
+  onChange: (filters: LineFilter[]) => void;
+}) {
+  const updateAt = (index: number, patch: Partial<LineFilter>) =>
+    onChange(
+      filters.map((filter, current) =>
+        current === index ? { ...filter, ...patch } : filter,
+      ),
+    );
+  return (
+    <div className="mb-3 rounded-xl border border-zinc-200 p-4 dark:border-zinc-800">
+      <div className="flex items-center justify-between">
+        <span className="text-sm text-zinc-500 dark:text-zinc-400">
+          过滤条件
+        </span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() =>
+            onChange([...filters, { field: '', operator: 'eq', value: '' }])
+          }
+        >
+          添加条件
+        </Button>
+      </div>
+      {filters.length > 0 ? (
+        <div className="mt-3 flex flex-col gap-2">
+          {filters.map((filter, index) => (
+            <div key={index} className="flex flex-wrap items-center gap-2">
+              <SelectMenu
+                aria-label="字段"
+                className="w-40 shrink-0"
+                placeholder="字段"
+                value={filter.field}
+                options={LINE_FILTER_FIELDS}
+                onChange={(value) => {
+                  const field = value as LineFilterField;
+                  const supported = lineFilterOperators(field).some(
+                    (option) => option.value === filter.operator,
+                  );
+                  updateAt(index, {
+                    field,
+                    operator: supported ? filter.operator : 'eq',
+                  });
+                }}
+              />
+              <SelectMenu
+                aria-label="比较符"
+                className="w-32 shrink-0"
+                value={filter.operator}
+                options={lineFilterOperators(filter.field)}
+                onChange={(value) =>
+                  updateAt(index, { operator: value as LineFilterOperator })
+                }
+              />
+              <Input
+                aria-label="值"
+                className="min-w-0 flex-1"
+                placeholder="值"
+                value={filter.value}
+                onChange={(event) =>
+                  updateAt(index, { value: event.target.value })
+                }
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() =>
+                  onChange(filters.filter((_, current) => current !== index))
+                }
+              >
+                移除
+              </Button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

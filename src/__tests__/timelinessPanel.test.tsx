@@ -124,4 +124,58 @@ describe('TimelinessPanel', () => {
       }),
     ).toBeInTheDocument();
   });
+
+  it('filters the widgets with an added condition', async () => {
+    const user = userEvent.setup();
+    vi.mocked(loadArrivalSources).mockResolvedValue({
+      lines: [
+        line({ receivedQty: 10 }),
+        line({
+          supplier: '乙供',
+          billNo: 'PO-2',
+          entryId: 'E2',
+          materialNumber: 'M-2',
+          materialName: '未到件',
+          orderQty: 2,
+          deliveryDate: '2026-10-17',
+        }),
+      ],
+      receive: [],
+      instock: [],
+    });
+
+    render(
+      <TimelinessPanel
+        sessionId="session-1"
+        supplier=""
+        monthFrom="2026-10"
+        monthTo="2026-10"
+        months={months}
+        today={new Date(2026, 9, 18)}
+      />,
+    );
+
+    expect(
+      await screen.findByTestId('overall-timeliness-rate'),
+    ).toHaveTextContent(formatRate(10 / 12));
+    expect(screen.getAllByText('未到件').length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole('button', { name: '添加条件' }));
+    await user.click(screen.getByRole('combobox', { name: '字段' }));
+    await user.click(screen.getByRole('button', { name: '供应商' }));
+    await user.click(screen.getByRole('combobox', { name: '比较符' }));
+    await user.click(screen.getByRole('button', { name: '包含' }));
+    await user.type(screen.getByPlaceholderText('值'), '甲');
+
+    expect(screen.queryByText('未到件')).not.toBeInTheDocument();
+    expect(screen.getByTestId('overall-timeliness-rate')).toHaveTextContent(
+      formatRate(1),
+    );
+
+    await user.click(screen.getByRole('button', { name: '移除' }));
+    expect(
+      await screen.findByTestId('overall-timeliness-rate'),
+    ).toHaveTextContent(formatRate(10 / 12));
+    expect(screen.getAllByText('未到件').length).toBeGreaterThan(0);
+  });
 });

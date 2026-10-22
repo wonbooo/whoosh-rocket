@@ -110,8 +110,8 @@ export function MonthPicker({
               const token = formatMonth(year, month);
               const active = token === value;
               const blocked =
-                (after != null && after !== '' && token <= after) ||
-                (before != null && before !== '' && token >= before);
+                (after != null && after !== '' && token < after) ||
+                (before != null && before !== '' && token > before);
               return (
                 <button
                   key={month}

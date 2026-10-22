@@ -147,12 +147,14 @@ describe('SupplierEvaluationPage', () => {
     expect(screen.getByLabelText('宽限天数')).toHaveValue(2);
     await user.clear(screen.getByPlaceholderText('搜索供应商'));
     await user.tab();
-    expect(screen.getByText('过滤条件')).toBeInTheDocument();
+    const [topFilterLabel] = screen.getAllByText('过滤条件');
+    const topFilter = topFilterLabel?.closest('section') as HTMLElement;
+    expect(topFilter).not.toBeNull();
     expect(
-      screen.queryByRole('button', { name: '添加条件' }),
+      within(topFilter).queryByRole('button', { name: '添加条件' }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: '移除' }),
+      within(topFilter).queryByRole('button', { name: '移除' }),
     ).not.toBeInTheDocument();
     expect(
       within(
@@ -253,13 +255,21 @@ describe('SupplierEvaluationPage', () => {
     if (oldest.slice(0, 4) !== current.slice(0, 4)) {
       await user.click(screen.getByRole('button', { name: '上一年' }));
     }
-    expect(screen.getByRole('button', { name: oldest })).toBeDisabled();
+    expect(screen.getByRole('button', { name: oldest })).not.toBeDisabled();
     await user.keyboard('{Escape}');
     await user.click(monthFrom);
     if (oldest.slice(0, 4) !== current.slice(0, 4)) {
       await user.click(screen.getByRole('button', { name: '下一年' }));
     }
-    expect(screen.getByRole('button', { name: current })).toBeDisabled();
+    expect(screen.getByRole('button', { name: current })).not.toBeDisabled();
+    await user.click(screen.getByRole('button', { name: current }));
+    expect(
+      within(
+        screen
+          .getByRole('heading', { name: '到货质检明细' })
+          .closest('section') as HTMLElement,
+      ).queryByRole('columnheader', { name: '月份' }),
+    ).not.toBeInTheDocument();
   });
 
   it('pages the summary and detail tables', async () => {
