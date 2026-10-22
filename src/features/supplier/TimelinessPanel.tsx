@@ -240,9 +240,6 @@ export function TimelinessPanel({
           </div>
         ) : null}
       </div>
-      <p className="mb-3 text-sm text-zinc-500 dark:text-zinc-400">
-        按交货日期归月，按数量计算，口径与金蝶到货及时率一致：累计收货数量达到订单数量即算准时已交货，不再按收货单的日期追溯。没收满的数量在宽限截止日及之前算准时未交货，过了截止日算逾期未交货，逾期天数按今天计算。
-      </p>
       {!sessionId ? (
         <p className="text-sm text-zinc-500 dark:text-zinc-400">
           连接金蝶后，这里按采购订单的交货日期汇总到货及时率。

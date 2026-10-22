@@ -75,12 +75,8 @@ export function ScorecardPanel({
       <h2 className="mb-2 text-lg font-medium">供应商综合评分卡</h2>
       <p className="mb-3 text-sm leading-6 text-zinc-500 dark:text-zinc-400">
         综合评分 = 到货及时率 × 及时率权重 + 来料合格率 × 合格率权重 +
-        供货规模分 × 规模权重 + 交付敏捷分 × 敏捷权重。默认 30% / 30% / 25% /
-        15%。规模分按最大供应商金额归一到
-        0–100，优先用入库金额，没有入库金额时用采购金额。敏捷分按平均交付天数线性归一：3
-        天 100 分，15 天 0
-        分，超出区间夹紧。缺哪一项，该项不计入，其余权重按比例归一。评级 A ≥ 85
-        优秀，B 75–85 良好，C {'<'} 75 待改进。
+        供货规模分 × 规模权重 + 交付敏捷分 × 敏捷权重。评级 A ≥ 85 优秀，B 75–85
+        良好，C {'<'} 75 待改进。
       </p>
       <div className="mb-4 flex flex-wrap items-end gap-3">
         {WEIGHT_FIELDS.map((field) => (

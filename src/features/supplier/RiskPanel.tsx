@@ -70,7 +70,7 @@ export function RiskPanel({
     if (!isTauriRuntime()) {
       setAiState({
         status: 'unavailable',
-        message: '当前不是桌面端，无法启动应用附带的 FreeLM。',
+        message: '当前不是桌面端，无法启动应用附带的 AI。',
       });
       return;
     }
@@ -104,14 +104,8 @@ export function RiskPanel({
     <section id="supplier-risk" className="mt-8 scroll-mt-24">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-lg font-medium">供应商风险预警</h2>
-        <p className="text-xs text-zinc-500">
-          规则计算数字 · FreeLM 只改写文案
-        </p>
+        <p className="text-xs text-zinc-500">规则计算数字 · AI 只改写文案</p>
       </div>
-      <p className="mb-3 text-sm text-zinc-500 dark:text-zinc-400">
-        逾期、连续低及时率、合格率低于 90%、采购均价较前期上涨超过 8%
-        都由现有单据算出。FreeLM 不可用时仍显示这些规则预警。
-      </p>
       {loading ? (
         <p className="text-sm text-zinc-500">正在汇总供应商指标…</p>
       ) : !ready ? (
@@ -124,12 +118,12 @@ export function RiskPanel({
         <div className="space-y-3">
           <p className="text-xs text-zinc-500">
             {aiState.status === 'loading'
-              ? '正在请 FreeLM 生成预警文案…'
+              ? '正在请 AI 生成预警文案…'
               : aiState.status === 'unavailable'
-                ? `FreeLM 不可用：${aiState.message} 以下数字和文案都来自规则计算。`
+                ? `AI 不可用：${aiState.message} 以下数字和文案都来自规则计算。`
                 : aiCount > 0
-                  ? '标成 AI 文案的标题和说明由 FreeLM 生成；规则数据来自业务聚合，不是模型编造的。'
-                  : 'FreeLM 没有返回可用文案。以下为规则计算。'}
+                  ? '标成 AI 文案的标题和说明由 AI 生成；规则数据来自业务聚合，不是模型编造的。'
+                  : 'AI 没有返回可用文案。以下为规则计算。'}
           </p>
           {cards.map((card) => (
             <article
