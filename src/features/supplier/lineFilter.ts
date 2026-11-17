@@ -5,7 +5,7 @@ export type LineFilterOperator =
 
 export type LineFilterField = Exclude<
   keyof PurchaseLine,
-  'entryId' | 'excluded'
+  'entryId' | 'excluded' | 'closed'
 >;
 
 export interface LineFilter {

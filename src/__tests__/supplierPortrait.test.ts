@@ -16,6 +16,7 @@ function line(overrides: Partial<PurchaseLine> = {}): PurchaseLine {
     orderQty: 10,
     deliveryDate: '2026-10-01',
     excluded: false,
+    closed: false,
     ...overrides,
   };
 }
@@ -150,5 +151,23 @@ describe('buildPortraits', () => {
       priceChange: null,
       timeliness: 1,
     });
+  });
+
+  it('uses the selected arrival source for the timeliness rate', () => {
+    const common = {
+      inspect: [],
+      lines: [line()],
+      receipts: [receipt({ date: '2026-10-01', qty: 10 })],
+      instock: [receipt({ date: '2026-10-05', qty: 10 })],
+      months: ['2026-10'],
+      today: '2026-10-20',
+      graceDays: 2,
+    };
+    expect(
+      buildPortraits({ ...common, timelinessSource: 'receive' })[0].timeliness,
+    ).toBe(1);
+    expect(
+      buildPortraits({ ...common, timelinessSource: 'instock' })[0].timeliness,
+    ).toBe(0);
   });
 });

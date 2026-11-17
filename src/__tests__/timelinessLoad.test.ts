@@ -154,6 +154,19 @@ describe('loadArrivalSources', () => {
             FMRPFreezeStatus: 'A',
             FMRPTerminateStatus: 'A',
           }),
+          valuesFor(fieldKeys, {
+            FBillNo: 'PO-3',
+            'FSupplierId.FName': '丙供',
+            'FMaterialId.FName': '已关闭件',
+            'FMaterialId.FNumber': 'M-3',
+            FQty: 2,
+            FDeliveryDate: '2026-10-05',
+            FPOOrderEntry_FEntryID: 'E3',
+            FCloseStatus: 'B',
+            FMRPCloseStatus: 'A',
+            FMRPFreezeStatus: 'A',
+            FMRPTerminateStatus: 'A',
+          }),
         ];
         return { rows, rowCount: rows.length, truncated: false };
       }
@@ -213,6 +226,7 @@ describe('loadArrivalSources', () => {
         orderQty: 10,
         deliveryDate: '2026-10-01',
         excluded: false,
+        closed: false,
         receivedQty: 6,
       },
       {
@@ -224,6 +238,19 @@ describe('loadArrivalSources', () => {
         orderQty: 4,
         deliveryDate: '2026-10-02',
         excluded: true,
+        closed: false,
+        receivedQty: 0,
+      },
+      {
+        supplier: '丙供',
+        billNo: 'PO-3',
+        entryId: 'E3',
+        materialNumber: 'M-3',
+        materialName: '已关闭件',
+        orderQty: 2,
+        deliveryDate: '2026-10-05',
+        excluded: true,
+        closed: true,
         receivedQty: 0,
       },
     ]);

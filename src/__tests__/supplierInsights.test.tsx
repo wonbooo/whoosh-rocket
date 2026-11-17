@@ -35,6 +35,7 @@ function line(overrides: Partial<PurchaseLine> = {}): PurchaseLine {
     orderQty: 10,
     deliveryDate: '2026-10-01',
     excluded: false,
+    closed: false,
     amount: 200_000,
     orderDate: '2026-09-28',
     receivedQty: 10,
@@ -99,7 +100,22 @@ beforeEach(() => {
         qty: 10,
       },
     ],
-    instock: [],
+    instock: [
+      {
+        entryId: 'E1',
+        billNo: 'PO-1',
+        materialNumber: 'M-1',
+        date: '2026-10-01',
+        qty: 10,
+      },
+      {
+        entryId: 'E2',
+        billNo: 'PO-2',
+        materialNumber: 'M-2',
+        date: '2026-10-08',
+        qty: 10,
+      },
+    ],
   });
   useKingdeeStore.setState({
     serverUrl: '',

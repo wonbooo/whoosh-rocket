@@ -8,6 +8,7 @@ import {
   evaluateTimeliness,
   matchesLine,
   type ArrivalReceipt,
+  type ArrivalSource,
   type PurchaseLine,
 } from '@/features/supplier/timeliness';
 
@@ -201,6 +202,7 @@ export function buildPortraits(input: {
   lines: PurchaseLine[];
   receipts: ArrivalReceipt[];
   instock: ArrivalReceipt[];
+  timelinessSource?: ArrivalSource;
   monthFrom?: string;
   monthTo?: string;
   months: string[];
@@ -235,7 +237,8 @@ export function buildPortraits(input: {
   });
   const evaluation = evaluateTimeliness({
     lines: scoped,
-    receipts: input.receipts,
+    receipts:
+      input.timelinessSource === 'instock' ? input.instock : input.receipts,
     graceDays: input.graceDays,
     today: input.today,
     months: period,

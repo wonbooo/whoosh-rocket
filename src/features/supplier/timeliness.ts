@@ -7,9 +7,11 @@ export interface PurchaseLine {
   orderQty: number;
   deliveryDate: string;
   excluded: boolean;
+  /** 关闭状态（FCloseStatus）为「已关闭」，逾期未到列表不再显示。 */
+  closed: boolean;
   amount?: number | null;
   orderDate?: string;
-  /** 订单行上的累计收货数量。金蝶到货及时率按它判定，不看收货单日期。 */
+  /** 订单行上的累计收货数量（FReceiveQty），用于筛选；及时率按到货单据日期计算。 */
   receivedQty?: number;
 }
 
@@ -21,6 +23,9 @@ export interface ArrivalReceipt {
   qty: number;
   amount?: number | null;
 }
+
+/** 实际到货日期取数的单据来源。 */
+export type ArrivalSource = 'receive' | 'instock';
 
 export interface TimelinessDetail {
   supplier: string;
@@ -205,8 +210,27 @@ export function matchesLine(
   );
 }
 
+function matchingReceipts(
+  line: PurchaseLine,
+  receipts: ArrivalReceipt[],
+  today: string,
+): ArrivalReceipt[] {
+  return receipts
+    .filter((receipt) => {
+      if (receipt.qty <= 0 || parseDay(receipt.date) == null) {
+        return false;
+      }
+      if (receipt.date > today) {
+        return false;
+      }
+      return matchesLine(line, receipt);
+    })
+    .sort((left, right) => left.date.localeCompare(right.date));
+}
+
 function allocate(
   line: PurchaseLine,
+  receipts: ArrivalReceipt[],
   graceDays: number,
   today: string,
 ): AllocatedLine | null {
@@ -215,15 +239,11 @@ function allocate(
   if (!month || !deadline) {
     return null;
   }
-  // 金蝶云星空的到货及时率不看收货单的日期：累计收货数量达到订单数量即算及时，
-  // 没收满的部分在宽限截止日及之前算准时未交货，过了截止日才算逾期未交货。
-  const received = Math.min(Math.max(line.receivedQty ?? 0, 0), line.orderQty);
-  const onTimeQty = received >= line.orderQty ? line.orderQty : 0;
-  const open = line.orderQty - received;
-  const pendingQty = open > 0 && today <= deadline ? open : 0;
-  const overdueQty = open > 0 && today > deadline ? open : 0;
-  const delayDays =
-    overdueQty > 0 ? daysBetween(line.deliveryDate, today) : null;
+  let remaining = line.orderQty;
+  let onTimeQty = 0;
+  let lateQty = 0;
+  let delayWeight = 0;
+  const details: TimelinessDetail[] = [];
   const base = {
     supplier: line.supplier,
     billNo: line.billNo,
@@ -234,26 +254,76 @@ function allocate(
     deliveryDate: line.deliveryDate,
     month,
   };
+  for (const receipt of matchingReceipts(line, receipts, today)) {
+    if (remaining <= 0) {
+      break;
+    }
+    const take = Math.min(receipt.qty, remaining);
+    if (take <= 0) {
+      continue;
+    }
+    if (receipt.date <= deadline) {
+      onTimeQty += take;
+      details.push({
+        ...base,
+        actualDate: receipt.date,
+        onTimeQty: take,
+        lateQty: 0,
+        pendingQty: 0,
+        overdueQty: 0,
+        undeliveredQty: 0,
+        delayDays: null,
+      });
+    } else {
+      const delayDays = daysBetween(line.deliveryDate, receipt.date) ?? 0;
+      lateQty += take;
+      delayWeight += delayDays * take;
+      details.push({
+        ...base,
+        actualDate: receipt.date,
+        onTimeQty: 0,
+        lateQty: take,
+        pendingQty: 0,
+        overdueQty: 0,
+        undeliveredQty: 0,
+        delayDays,
+      });
+    }
+    remaining -= take;
+  }
+  let pendingQty = 0;
+  let overdueQty = 0;
+  if (remaining > 0) {
+    if (today <= deadline) {
+      pendingQty = remaining;
+    } else {
+      overdueQty = remaining;
+    }
+    const delayDays =
+      today > deadline ? daysBetween(line.deliveryDate, today) : null;
+    if (delayDays != null) {
+      delayWeight += delayDays * overdueQty;
+    }
+    details.push({
+      ...base,
+      actualDate: '',
+      onTimeQty: 0,
+      lateQty: 0,
+      pendingQty,
+      overdueQty,
+      undeliveredQty: remaining,
+      delayDays,
+    });
+  }
   return {
     line,
     month,
     onTimeQty,
-    lateQty: 0,
+    lateQty,
     pendingQty,
     overdueQty,
-    delayWeight: delayDays == null ? 0 : delayDays * overdueQty,
-    details: [
-      {
-        ...base,
-        actualDate: '',
-        onTimeQty,
-        lateQty: 0,
-        pendingQty,
-        overdueQty,
-        undeliveredQty: open,
-        delayDays,
-      },
-    ],
+    delayWeight,
+    details,
   };
 }
 
@@ -326,7 +396,7 @@ export function evaluateTimeliness(input: {
   const month = input.month ?? '';
   const scoped = input.lines.filter((line) => inScope(line, supplier, month));
   const allocated = scoped.flatMap((line) => {
-    const row = allocate(line, graceDays, input.today);
+    const row = allocate(line, input.receipts, graceDays, input.today);
     return row ? [row] : [];
   });
 
@@ -381,7 +451,7 @@ export function evaluateTimeliness(input: {
 
   const details = allocated.flatMap((row) => row.details).sort(compareDetails);
   const overdue = allocated
-    .filter((row) => row.overdueQty > 0)
+    .filter((row) => row.overdueQty > 0 && !row.line.closed)
     .map((row) => ({
       supplier: row.line.supplier,
       billNo: row.line.billNo,

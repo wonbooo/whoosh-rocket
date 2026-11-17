@@ -150,6 +150,7 @@ export function SupplierEvaluationPage() {
       lines: sources?.lines ?? [],
       receipts: sources?.receive ?? [],
       instock: sources?.instock ?? [],
+      timelinessSource: arrival?.source,
       monthFrom,
       monthTo,
       months,

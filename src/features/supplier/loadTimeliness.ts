@@ -26,6 +26,8 @@ const EXCLUDED_STATUS = new Set([
   '业务冻结',
   '业务终止',
 ]);
+/** 采购订单的关闭状态（FCloseStatus）为已关闭。业务关闭/冻结/终止不算。 */
+const CLOSED_STATUS = new Set(['B', '已关闭']);
 
 export interface ArrivalSources {
   lines: PurchaseLine[];
@@ -175,6 +177,10 @@ function isExcluded(values: string[]): boolean {
   return values.some((value) => EXCLUDED_STATUS.has(value.trim()));
 }
 
+function isClosed(value: string): boolean {
+  return CLOSED_STATUS.has(value.trim());
+}
+
 async function queryChunk(
   formId: string,
   filterString: string,
@@ -235,6 +241,7 @@ function readPurchase(
     return null;
   }
   const supplier = asText(read(fields.supplier)).trim();
+  const closeStatus = asText(read(fields.closeStatus));
   return {
     supplier,
     billNo: asText(read(fields.billNo)).trim(),
@@ -249,11 +256,12 @@ function readPurchase(
       ? { receivedQty: asQty(read(fields.receivedQty)) }
       : {}),
     excluded: isExcluded([
-      asText(read(fields.closeStatus)),
+      closeStatus,
       asText(read(fields.mrpClose)),
       asText(read(fields.mrpFreeze)),
       asText(read(fields.mrpTerminate)),
     ]),
+    closed: isClosed(closeStatus),
   };
 }
 
