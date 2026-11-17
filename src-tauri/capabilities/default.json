@@ -2,10 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "enables the default permissions",
-  "windows": ["main", "desktop-icon"],
+  "windows": ["main"],
   "permissions": [
     "core:default",
-    "allow-desktop-icon",
     "allow-freelm",
     {
       "identifier": "http:default",

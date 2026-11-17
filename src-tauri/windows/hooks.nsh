@@ -70,6 +70,10 @@
 
 ; Files are copied before this runs, so the bundled runtime is already in place.
 !macro NSIS_HOOK_POSTINSTALL
+  ; Older versions put a desktop pet in the login autostart; it is gone now, so
+  ; drop the leftover Run value rather than launching the app on every login.
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "WhooshRocket"
+
   nsExec::ExecToStack 'powershell -NoProfile -Command "try { (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:${FREELM_PORT}/health -TimeoutSec 2).StatusCode } catch { 0 }"'
   Pop $0
   Pop $1

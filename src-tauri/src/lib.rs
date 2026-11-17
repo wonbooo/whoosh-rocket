@@ -5,31 +5,14 @@ use chrono::{Local, NaiveDate};
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            if !args.iter().any(|arg| arg == "--desktop-only") {
-                desktop_icon::show_main(app);
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
             }
         }))
         .plugin(tauri_plugin_http::init())
-        .on_menu_event(|app, event| {
-            desktop_icon::handle_menu(app, &event.id().0);
-        })
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                match window.label() {
-                    "main" => {
-                        api.prevent_close();
-                        let app = window.app_handle();
-                        if let Some(icon) = app.get_webview_window("desktop-icon") {
-                            let _ = icon.destroy();
-                        }
-                        app.exit(0);
-                    }
-                    "desktop-icon" => api.prevent_close(),
-                    _ => {}
-                }
-            }
-        })
         .setup(|app| {
             let path =
                 store::database_path(&app.path().app_data_dir().map_err(|err| err.to_string())?);
@@ -41,7 +24,10 @@ pub fn run() {
                         .build(),
                 )?;
             }
-            desktop_icon::install(app)?;
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
             freelm::adopt_existing(app.handle());
             freelm::start_on_launch(app.handle().clone());
             Ok(())
@@ -55,9 +41,6 @@ pub fn run() {
             db_put,
             db_delete,
             db_list,
-            desktop_icon::desktop_icon_nudge,
-            desktop_icon::desktop_icon_open,
-            desktop_icon::desktop_icon_menu,
             freelm::freelm_complete,
         ])
         .build(tauri::generate_context!())
@@ -65,7 +48,6 @@ pub fn run() {
         .run(|_app, _event| {});
 }
 
-mod desktop_icon;
 mod freelm;
 mod license;
 mod license_keys;
